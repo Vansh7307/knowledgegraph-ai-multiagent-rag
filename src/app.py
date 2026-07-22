@@ -107,15 +107,15 @@ _INDEX_HTML = """<!DOCTYPE html>
 <title>KnowledgeGraph AI -- Multi-Agent RAG System</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
+  :root { color-scheme: light; }
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; background: #fff; color: #111; }
   h1 { font-size: 1.3rem; }
   .sub { color: #666; margin-bottom: 24px; }
-  textarea { width: 100%; box-sizing: border-box; padding: 10px; font-size: 1rem; border-radius: 8px; border: 1px solid #ccc; }
+  textarea { width: 100%; box-sizing: border-box; padding: 10px; font-size: 1rem; border-radius: 8px; border: 1px solid #ccc; background: #fff; color: #111; }
   button { margin-top: 8px; padding: 8px 16px; font-size: 1rem; border-radius: 8px; border: none; background: #111; color: #fff; cursor: pointer; }
   button:disabled { opacity: 0.5; cursor: not-allowed; }
-  .answer { margin-top: 20px; padding: 14px; border-radius: 8px; background: #f4f4f4; white-space: pre-wrap; }
-  .meta { margin-top: 8px; font-size: 0.85rem; color: #888; }
+  .answer { margin-top: 20px; padding: 14px; border-radius: 8px; background: #f4f4f4; color: #111; white-space: pre-wrap; }
+  .meta { margin-top: 8px; font-size: 0.85rem; color: #555; }
   .examples { margin-top: 12px; font-size: 0.85rem; }
   .examples button { background: #eee; color: #111; margin: 4px 4px 0 0; padding: 4px 10px; font-size: 0.8rem; }
 </style>
