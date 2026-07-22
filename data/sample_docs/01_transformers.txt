@@ -1,0 +1,9 @@
+The Transformer Architecture
+
+The Transformer architecture was introduced by a team of researchers at Google in 2017 in the paper "Attention Is All You Need". It replaced older sequence models such as Recurrent Neural Networks and Long Short-Term Memory networks by relying entirely on a mechanism called Self-Attention.
+
+Self-Attention allows a model to weigh the importance of every word in a sentence relative to every other word, which makes training highly parallelizable on GPUs and TPUs. The Transformer consists of an Encoder and a Decoder, each built from stacked layers of Multi-Head Attention and Feed-Forward Networks.
+
+Google later used the Transformer encoder to build BERT, a model designed for understanding language rather than generating it. BERT is trained using a technique called Masked Language Modeling, where random words in a sentence are hidden and the model must predict them from context.
+
+The Transformer decoder became the foundation for a separate line of generative models developed by OpenAI, known as the GPT family. Unlike BERT, GPT models are trained to predict the next word in a sequence, which makes them naturally suited for text generation tasks such as chat and summarization.

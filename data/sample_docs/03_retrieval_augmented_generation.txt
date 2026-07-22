@@ -1,0 +1,9 @@
+Retrieval-Augmented Generation
+
+Retrieval-Augmented Generation, commonly abbreviated as RAG, is a technique introduced by researchers at Meta AI in 2020 to reduce hallucination in large language models. Instead of relying only on knowledge stored in a model's parameters, RAG systems retrieve relevant passages from an external document store at query time and provide them to the model as additional context.
+
+A typical RAG pipeline has two main components: a Retriever, which searches a document collection for relevant passages, and a Generator, which is a large language model such as GPT that produces an answer conditioned on the retrieved passages.
+
+Knowledge Graphs are increasingly combined with RAG systems to form what is often called Graph RAG. In a Graph RAG system, entities and relationships are extracted from documents and stored as a graph structure, allowing the retriever to perform multi-hop reasoning across connected facts rather than relying on similarity search alone.
+
+Multi-Agent systems extend RAG further by dividing responsibilities among specialized agents, such as a retrieval agent, a reasoning agent, and a synthesis agent, which communicate through an orchestration framework such as LangGraph.

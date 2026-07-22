@@ -1,0 +1,9 @@
+The GPT Family and OpenAI
+
+OpenAI released GPT-2 in 2019 as a direct successor to the original GPT model, scaling up the number of parameters and training data significantly. GPT-2 demonstrated that a single generative model could perform translation, summarization, and question answering without task-specific training, an ability known as Zero-Shot Learning.
+
+In 2020, OpenAI released GPT-3, which increased the parameter count into the hundreds of billions and popularized a technique called Few-Shot Prompting, where a handful of examples in the input prompt guide the model's behavior without any additional training.
+
+OpenAI later introduced Reinforcement Learning from Human Feedback, a training technique used to align GPT-3 with human preferences. This technique was central to the development of ChatGPT, released in 2022, which combined the GPT architecture with a conversational fine-tuning process.
+
+Microsoft has been a major investor in OpenAI and integrated GPT models into its Bing search engine and Microsoft Copilot product line, embedding GPT-based reasoning directly into office productivity tools.
