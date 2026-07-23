@@ -17,11 +17,13 @@ Deployed on Render with the same command (see render.yaml).
 from __future__ import annotations
 
 import logging
+import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.config import settings
 from src.graph_orchestrator import build_query_graph
@@ -35,6 +37,32 @@ logger = logging.getLogger("app")
 # Populated once at startup, reused by every request.
 pipeline_state: dict = {}
 
+# Per-IP sliding-window rate limiting, in-memory (fine for a single-instance
+# free-tier deployment; swap for Redis/slowapi if you scale to multiple
+# instances). Deliberately generous by default (see KG_RATE_LIMIT_PER_MINUTE)
+# -- this exists to stop runaway/abusive usage from exhausting a free LLM
+# quota, not to throttle normal use.
+_request_log: dict[str, deque] = defaultdict(deque)
+
+
+def _check_rate_limit(client_ip: str) -> None:
+    now = time.monotonic()
+    window = _request_log[client_ip]
+    while window and now - window[0] > 60:
+        window.popleft()
+    if len(window) >= settings.rate_limit_per_minute:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded ({settings.rate_limit_per_minute} requests/minute). Try again shortly.",
+        )
+    window.append(now)
+
+
+def _check_api_key(x_api_key: str | None) -> None:
+    """No-op if API_KEY is unset (the default) -- opt-in, not required."""
+    if settings.api_key and x_api_key != settings.api_key:
+        raise HTTPException(status_code=401, detail="Missing or invalid X-API-Key header.")
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -43,7 +71,7 @@ async def lifespan(_app: FastAPI):
 
     logger.info("Startup: building knowledge graph (this runs once, not per-request) ...")
     kg_builder = KnowledgeGraphBuilder()
-    graph = kg_builder.build(chunks)
+    graph = kg_builder.build_with_cache(chunks, settings.graph_cache_path)
     logger.info("Startup: LLM provider in use: %s", kg_builder.llm.info)
 
     retriever = HybridRetriever(chunks)
@@ -63,7 +91,7 @@ app = FastAPI(title="KnowledgeGraph AI - Multi-Agent RAG System", lifespan=lifes
 
 
 class QueryRequest(BaseModel):
-    question: str
+    question: str = Field(..., min_length=3, max_length=500)
 
 
 class QueryResponse(BaseModel):
@@ -84,9 +112,24 @@ def health():
 
 
 @app.post("/query", response_model=QueryResponse)
-def query(request: QueryRequest) -> QueryResponse:
+def query(request: QueryRequest, http_request: Request, x_api_key: str | None = Header(default=None)) -> QueryResponse:
+    _check_api_key(x_api_key)
+    _check_rate_limit(http_request.client.host if http_request.client else "unknown")
+
+    if "query_graph" not in pipeline_state:
+        raise HTTPException(status_code=503, detail="Knowledge graph is still building. Try again in a few seconds.")
+
     query_graph = pipeline_state["query_graph"]
-    result = query_graph.invoke({"question": request.question, "hop": 0})
+    try:
+        result = query_graph.invoke({"question": request.question, "hop": 0})
+    except Exception as e:  # noqa: BLE001 -- deliberately broad: any LLM/provider failure should degrade gracefully
+        logger.exception("Pipeline failed while answering a question")
+        raise HTTPException(
+            status_code=502,
+            detail="The reasoning pipeline hit an error talking to the LLM provider "
+                   "(rate limit or transient failure). Please try again in a moment.",
+        ) from e
+
     return QueryResponse(
         answer=result["answer"],
         hops=result.get("hop", 0),
@@ -291,7 +334,7 @@ _INDEX_HTML = """<!DOCTYPE html>
 
   <div class="panel">
     <label class="field-label" for="question">Ask the knowledge graph</label>
-    <textarea id="question" rows="2" placeholder="e.g. How is BERT related to the Transformer architecture Google introduced?"></textarea>
+    <textarea id="question" rows="2" maxlength="500" placeholder="e.g. How is BERT related to the Transformer architecture Google introduced?"></textarea>
     <div class="row">
       <div class="chips">
         <button class="chip" type="button">What is Self-Attention?</button>
@@ -388,6 +431,16 @@ async function runQuery() {
       body: JSON.stringify({ question }),
     });
     const data = await res.json();
+
+    if (!res.ok) {
+      clearTimeout(stageTimer1);
+      resetTrace();
+      const message = Array.isArray(data.detail)
+        ? data.detail.map(d => d.msg).join(' ')
+        : (data.detail || 'Unexpected error.');
+      els.result.innerHTML = `<div class="panel"><div class="empty">${message}</div></div>`;
+      return;
+    }
 
     clearTimeout(stageTimer1);
     setStage('retrieval', 'done');

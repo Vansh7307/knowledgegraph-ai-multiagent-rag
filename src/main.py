@@ -37,7 +37,7 @@ def run_pipeline(questions: list[str]) -> None:
 
     logger.info("Building knowledge graph (Graph Builder Agent) ...")
     kg_builder = KnowledgeGraphBuilder()
-    graph = kg_builder.build(chunks)
+    graph = kg_builder.build_with_cache(chunks, settings.graph_cache_path)
     logger.info("LLM provider in use: %s", kg_builder.llm.info)
 
     retriever = HybridRetriever(chunks)

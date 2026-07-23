@@ -26,6 +26,13 @@ class Settings:
     top_k_chunks: int = int(os.getenv("KG_TOP_K", "4"))
     graph_hops: int = int(os.getenv("KG_GRAPH_HOPS", "2"))
 
+    # -- Graph cache (avoids re-extracting entities via LLM on every restart) --
+    graph_cache_path: str = os.getenv("KG_CACHE_PATH", ".cache/knowledge_graph.json")
+
+    # -- Optional API protection (both off/generous by default) ---------
+    api_key: str | None = os.getenv("API_KEY")  # if unset, /query needs no auth
+    rate_limit_per_minute: int = int(os.getenv("KG_RATE_LIMIT_PER_MINUTE", "20"))
+
     # -- Multi-agent control loop ----------------------------------------
     max_reasoning_hops: int = int(os.getenv("KG_MAX_REASONING_HOPS", "2"))
 

@@ -1,6 +1,9 @@
 # Secrets -- never commit your API keys
 .env
 
+# Knowledge graph cache (regenerated automatically, machine-specific)
+.cache/
+
 # Python
 __pycache__/
 *.pyc

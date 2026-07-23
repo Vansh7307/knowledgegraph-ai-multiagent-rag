@@ -1,0 +1,7 @@
+# Normalize line endings to LF in the repo, regardless of the checkout OS.
+* text=auto eol=lf
+
+# These are binary and should never be touched.
+*.png binary
+*.jpg binary
+*.ipynb -diff

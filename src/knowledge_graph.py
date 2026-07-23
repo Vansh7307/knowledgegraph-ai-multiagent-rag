@@ -5,12 +5,21 @@ The Graph Builder Agent: turns raw text chunks into a NetworkX knowledge
 graph of entities connected by relations, with full provenance (every
 edge remembers which chunk it came from, so answers can always be
 traced back to source text).
+
+Graph building calls the LLM once per chunk, which costs time and (on
+free-tier providers) quota. Since the graph only needs to change when the
+source documents change, `build_with_cache` persists the built graph to
+disk keyed on a hash of the corpus -- so a process restart (e.g. Render's
+free-tier spin-down/wake cycle) reloads the cached graph instantly instead
+of re-extracting every chunk from scratch.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
 
 import networkx as nx
@@ -28,6 +37,16 @@ Return ONLY a JSON list of the form:
 {"entities": ["Entity A", "Entity B"], "relations": [{"source": "Entity A", "target": "Entity B", "relation": "short verb phrase"}]}
 
 No prose, no markdown fences, JSON only."""
+
+
+def _corpus_hash(chunks: list[Chunk]) -> str:
+    """Stable hash of the corpus content, so the cache invalidates automatically
+    the moment any source document changes (add/edit/remove a .txt file)."""
+    hasher = hashlib.sha256()
+    for chunk in chunks:
+        hasher.update(chunk.chunk_id.encode("utf-8"))
+        hasher.update(chunk.text.encode("utf-8"))
+    return hasher.hexdigest()
 
 
 class KnowledgeGraphBuilder:
@@ -55,6 +74,37 @@ class KnowledgeGraphBuilder:
         for chunk in chunks:
             self.add_chunk(chunk)
         logger.info("Knowledge graph built: %d nodes, %d edges", self.graph.number_of_nodes(), self.graph.number_of_edges())
+        return self.graph
+
+    def build_with_cache(self, chunks: list[Chunk], cache_path: str) -> nx.MultiDiGraph:
+        """Like `build`, but reuses a cached graph on disk if the corpus is
+        unchanged, avoiding redundant LLM calls on every process restart."""
+        current_hash = _corpus_hash(chunks)
+
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    cached = json.load(f)
+                if cached.get("corpus_hash") == current_hash:
+                    self.graph = nx.node_link_graph(cached["graph"], directed=True, multigraph=True, edges="edges")
+                    logger.info(
+                        "Loaded knowledge graph from cache (%s): %d nodes, %d edges -- no LLM calls made",
+                        cache_path, self.graph.number_of_nodes(), self.graph.number_of_edges(),
+                    )
+                    return self.graph
+                logger.info("Cache at %s is stale (corpus changed) -- rebuilding", cache_path)
+            except (json.JSONDecodeError, KeyError, OSError) as e:
+                logger.warning("Could not read graph cache (%s), rebuilding: %s", cache_path, e)
+
+        self.build(chunks)
+        try:
+            os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump({"corpus_hash": current_hash, "graph": nx.node_link_data(self.graph, edges="edges")}, f)
+            logger.info("Cached knowledge graph to %s", cache_path)
+        except OSError as e:
+            logger.warning("Could not write graph cache to %s (continuing without cache): %s", cache_path, e)
+
         return self.graph
 
     @staticmethod

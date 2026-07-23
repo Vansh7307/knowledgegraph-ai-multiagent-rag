@@ -1,5 +1,8 @@
 # KnowledgeGraph AI -- Multi-Agent RAG System
 
+[![Tests](https://github.com/Vansh7307/knowledgegraph-ai-multiagent-rag/actions/workflows/tests.yml/badge.svg)](https://github.com/Vansh7307/knowledgegraph-ai-multiagent-rag/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A **Graph RAG** system built from five cooperating agents, orchestrated with
 **LangGraph**. It answers questions by combining lexical retrieval, a
 knowledge graph built from your documents, and a bounded multi-hop
@@ -84,6 +87,38 @@ explanations.
 Drop any `.txt` files into `data/sample_docs/` (or point `KG_DATA_DIR` at
 another folder) and rerun -- the graph is rebuilt from whatever is in that
 directory.
+
+## Graph caching
+
+Building the graph calls the LLM once per chunk, which costs time and (on
+free-tier providers) quota. The built graph is cached to disk at
+`.cache/knowledge_graph.json`, keyed on a hash of the corpus -- so restarting
+the process (including Render's free-tier sleep/wake cycle) reloads the
+cached graph instantly instead of re-extracting every chunk. The cache
+invalidates itself automatically the moment a source document changes.
+Delete the `.cache/` folder to force a full rebuild.
+
+## Known limitations
+
+This is a demo-scale reference implementation, not a hardened production
+service. Specifically:
+
+- **No authentication or rate limiting on the API.** Anyone with the URL can
+  call `/query`. Fine for a demo/portfolio deployment; add an API key check
+  or a reverse-proxy rate limiter before exposing it more broadly.
+- **BM25, not semantic embeddings, for lexical retrieval.** Keeps the stack
+  free and dependency-light, but won't catch paraphrases that share no
+  keywords with the question. Swapping in a sentence-transformers or
+  OpenAI-embeddings retriever is a drop-in replacement for `HybridRetriever`.
+- **NetworkX, not a graph database.** Fine for a few thousand nodes in
+  memory; a corpus with millions of entities would want Neo4j or similar.
+- **The offline rule-based fallback is intentionally simple** (regex entity
+  extraction, extractive answers). It exists to keep the system runnable
+  with zero cost/config, not to match a real LLM's quality -- configure a
+  free-tier key (Groq/Gemini) or Ollama for real reasoning.
+- **Render's free tier sleeps after inactivity**, so the first request after
+  idling takes 30-50 seconds to wake up (graph caching means it won't
+  re-extract entities, but the process itself still needs to cold-start).
 
 ## Tests
 
