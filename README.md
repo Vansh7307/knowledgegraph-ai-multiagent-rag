@@ -98,6 +98,29 @@ cached graph instantly instead of re-extracting every chunk. The cache
 invalidates itself automatically the moment a source document changes.
 Delete the `.cache/` folder to force a full rebuild.
 
+## Grounded answers, with an honest general-knowledge fallback
+
+By default, the Synthesis Agent answers from your ingested documents and
+cites the exact chunk it used. If the knowledge graph and retrieved
+passages don't cover the question, it doesn't just refuse -- it can answer
+from the underlying LLM's general knowledge instead, but it's required to
+clearly mark that portion with a
+`[General knowledge -- not from the ingested documents]` tag (shown as a
+distinct blue badge in the web UI) so grounded and ungrounded claims are
+never silently blended together.
+
+This means the system can answer questions outside your document set
+(e.g. "What is Gemini?") without you needing to write a document for every
+possible topic -- while still being transparent about what it actually
+knows versus what it's recalling from the model's training data.
+
+**Note:** this fallback only works when a real LLM provider is configured
+(Groq/Gemini/Ollama/OpenAI). The offline rule-based fallback mode has no
+general knowledge of its own -- it can only extract from what's in your
+documents, so out-of-scope questions in offline mode will still come back
+empty. Add a free-tier key (see `.env.example`) to get general-knowledge
+fallback.
+
 ## Known limitations
 
 This is a demo-scale reference implementation, not a hardened production

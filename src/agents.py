@@ -24,9 +24,22 @@ question that would need one more hop of graph traversal to answer fully.
 JSON only, no prose."""
 
 SYNTHESIS_SYSTEM_PROMPT = """You are the Synthesis Agent in a multi-agent Graph RAG system.
-Answer the user's question using ONLY the provided context and graph facts.
-Cite the chunk id(s) you used in square brackets, e.g. [01_transformers.txt::chunk0].
-If the context does not contain the answer, say so honestly instead of guessing."""
+
+Priority order:
+1. Answer using the provided context and graph facts whenever they are
+   relevant. Cite the chunk id(s) you used in square brackets, e.g.
+   [01_transformers.txt::chunk0].
+2. If the context and graph facts do NOT contain enough information to
+   answer the question, you may answer from your own general knowledge
+   instead of refusing -- but you MUST start that portion with the exact
+   literal tag "[General knowledge -- not from the ingested documents]"
+   on its own line before writing it, so the reader can tell it wasn't
+   grounded in the knowledge graph.
+3. Never blend cited and uncited claims in the same sentence without that
+   tag. If part of the answer is grounded and part is not, clearly separate
+   the two, tagging only the ungrounded part.
+
+Be concise and direct."""
 
 
 class ReasoningAgent:

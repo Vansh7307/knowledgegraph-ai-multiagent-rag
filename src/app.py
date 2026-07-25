@@ -268,6 +268,11 @@ _INDEX_HTML = """<!DOCTYPE html>
     font-family: 'IBM Plex Mono', monospace; font-size: 0.78em; color: var(--amber);
     background: #241d0e; border: 1px solid #4a3a15; border-radius: 4px; padding: 1px 5px; margin: 0 2px;
   }
+  .answer-text .general-note {
+    display: block; font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem;
+    color: #8fb4d9; background: #12202e; border: 1px solid #24435f; border-radius: 6px;
+    padding: 5px 10px; margin: 10px 0 6px; letter-spacing: 0.02em;
+  }
   .stats-bar { display: flex; gap: 18px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); flex-wrap: wrap; }
   .stat { font-family: 'IBM Plex Mono', monospace; font-size: 0.78rem; color: var(--muted); }
   .stat b { color: var(--text); font-weight: 600; }
@@ -382,7 +387,11 @@ function resetTrace() {
 
 function linkify(text) {
   const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return escaped.replace(/\\[([\\w\\-.]+::chunk\\d+(?:,\\s*[\\w\\-.]+::chunk\\d+)*)\\]/g, '<span class="cite">$1</span>');
+  const withCitations = escaped.replace(/\\[([\\w\\-.]+::chunk\\d+(?:,\\s*[\\w\\-.]+::chunk\\d+)*)\\]/g, '<span class="cite">$1</span>');
+  return withCitations.replace(
+    /\\[General knowledge -- not from the ingested documents\\]/g,
+    '<span class="general-note">⚠ General knowledge — not from the ingested documents</span>'
+  );
 }
 
 async function loadHealth() {
