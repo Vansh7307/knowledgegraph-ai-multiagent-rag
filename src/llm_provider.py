@@ -15,9 +15,10 @@ Provider selection is automatic and prefers *free* options first:
     3. Ollama       (100% free & local, needs Ollama running, no key)
     4. OpenAI       (paid, only used if OPENAI_API_KEY is set and nothing
                       free is available)
-    5. Offline mode (no key / no local model found) -- a lightweight
-       rule-based fallback keeps the whole pipeline runnable for grading,
-       demos, or CI with zero cost and zero network calls.
+    5. Offline mode (no key / no local model found) -- a from-scratch,
+       pure-Python answer engine (see scratch_engine.py) keeps the whole
+       pipeline runnable for grading, demos, or CI with zero cost and zero
+       network calls.
 
 Every agent in this project talks to `get_llm().chat(system, user)` and
 never needs to know which provider is actually behind it.
@@ -31,6 +32,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from src.config import settings
+from src.scratch_engine import ScratchAnswerEngine, extract_entities_and_relations
 
 
 @dataclass
@@ -45,57 +47,96 @@ class OfflineLLM:
     configured. It never calls the network. It is intentionally simple:
     it is NOT meant to replace a real LLM's reasoning quality, only to
     keep every agent in the pipeline runnable end-to-end so the system
-    can be graded, demoed, or unit-tested without any API key.
+    can be graded, demoed, or unit-tested without any API key. It uses the
+    from-scratch `ScratchAnswerEngine` to rank and cite the most relevant
+    sentences from the retrieved context.
     """
 
-    info = ProviderInfo(name="offline-rule-based", model="n/a")
+    info = ProviderInfo(name="offline-scratch-engine", model="n/a")
 
-    _STOPWORDS = {
-        "the", "a", "an", "is", "are", "was", "were", "of", "and", "or",
-        "in", "on", "for", "to", "by", "with", "as", "that", "this",
-        "it", "its", "which", "who", "what", "how", "why", "does", "do",
-    }
+    def __init__(self):
+        self._engine = ScratchAnswerEngine()
 
     def chat(self, system: str, user: str, temperature: float = 0.2) -> str:
         # The offline path never uses the free-text `system`/`user` prompt
         # semantically -- it just extracts the JSON-producing tasks our
-        # agents ask for, or falls back to naive extractive text.
+        # agents ask for, or runs the scratch answer engine on the context.
         if "Return ONLY a JSON list of" in system or "extract" in system.lower():
             return self._extract_entities_and_relations(user)
         if "Decide if the context" in system:
             return self._reasoning_stub(user)
-        return self._extractive_answer(user)
+        return self._scratch_answer(user)
 
-    # -- entity / relation extraction (regex heuristic) -------------------
+    # -- entity / relation extraction (from-scratch heuristic) ------------
     def _extract_entities_and_relations(self, text: str) -> str:
-        candidates = re.findall(r"\b(?:[A-Z][a-zA-Z0-9\-]*(?:\s+[A-Z][a-zA-Z0-9\-]*)*)\b", text)
-        entities = sorted({c.strip() for c in candidates if len(c.strip()) > 2 and c.strip().lower() not in self._STOPWORDS})[:12]
-        relations = []
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-        for sent in sentences:
-            present = [e for e in entities if e in sent]
-            for i in range(len(present)):
-                for j in range(i + 1, len(present)):
-                    relations.append({
-                        "source": present[i],
-                        "target": present[j],
-                        "relation": "related_to",
-                    })
-        return json.dumps({"entities": entities, "relations": relations[:20]})
+        return json.dumps(extract_entities_and_relations(text))
 
-    def _reasoning_stub(self, _user: str) -> str:
-        # Offline mode never asks for another hop -- it always accepts
-        # whatever was retrieved, since it cannot judge sufficiency well.
-        return json.dumps({"sufficient": True, "missing_entities": []})
+    def _reasoning_stub(self, user: str) -> str:
+        # A real keyword-sufficiency check: if every key term in the question
+        # is already covered by the retrieved context, we're done; otherwise
+        # we ask for one more hop so the graph traversal can fill the gap.
+        from src.scratch_engine import tokenize
 
-    def _extractive_answer(self, user: str) -> str:
-        # Very naive extractive fallback: return the most relevant
-        # sentences from the provided context verbatim-free (paraphrase-
-        # free is fine here since it's the user's own ingested data).
-        context_match = re.search(r"Context:\n(.*?)\n\nQuestion", user, re.S)
-        context = context_match.group(1) if context_match else user
-        sentences = re.split(r"(?<=[.!?])\s+", context)
-        return " ".join(sentences[:3]) if sentences else "No answer could be generated offline."
+        question = ""
+        m = re.search(r"Question:\s*(.*?)(?:\n\n|\Z)", user, re.S)
+        if m:
+            question = m.group(1).strip()
+
+        context = ""
+        ctx = re.search(r"Retrieved passages:\n(.*?)(?:\n\nGraph facts:|\Z)", user, re.S)
+        if ctx:
+            context = ctx.group(1)
+
+        q_tokens = set(tokenize(question))
+        c_tokens = set(tokenize(context))
+        if not q_tokens:
+            return json.dumps({"sufficient": True, "missing_entities": []})
+
+        missing = [t for t in sorted(q_tokens) if t not in c_tokens]
+        # If most of the question's key terms are already present, accept the
+        # current retrieval rather than looping forever.
+        sufficient = len(missing) == 0 or len(missing) <= max(1, len(q_tokens) // 2)
+        return json.dumps({"sufficient": sufficient, "missing_entities": missing})
+
+    def _scratch_answer(self, user: str) -> str:
+        # Parse the SynthesisAgent prompt: Context, Graph facts, Question.
+        context_block = ""
+        ctx = re.search(r"Context:(.*?)Graph facts:", user, re.S)
+        if ctx:
+            context_block = ctx.group(1).strip()
+
+        graph_facts = []
+        gf = re.search(r"Graph facts:(.*?)Question:", user, re.S)
+        if gf:
+            raw = gf.group(1).strip() or "(none)"
+            if raw and raw != "(none)":
+                graph_facts = [line.strip() for line in raw.splitlines() if line.strip()]
+
+        question = ""
+        q = re.search(r"Question:\s*(.*)", user, re.S)
+        if q:
+            question = q.group(1).strip()
+
+        # Rebuild lightweight chunk objects from the `[chunk_id] text` lines.
+        chunks = []
+        for line in context_block.splitlines():
+            mm = re.match(r"\[(.+?)\]\s*(.*)", line.strip())
+            if mm:
+                chunks.append(_PromptChunk(mm.group(1), mm.group(2)))
+
+        if not chunks:
+            return "I couldn't find a grounded answer in the ingested documents for that question."
+        return self._engine.answer(question, chunks, graph_facts)
+
+
+class _PromptChunk:
+    """Minimal chunk-like object so ScratchAnswerEngine can consume prompt text."""
+
+    __slots__ = ("chunk_id", "text")
+
+    def __init__(self, chunk_id: str, text: str):
+        self.chunk_id = chunk_id
+        self.text = text
 
 
 class OpenAICompatibleLLM:

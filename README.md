@@ -60,10 +60,11 @@ free options first:
 2. **Google Gemini** free tier -- set `GOOGLE_API_KEY`
 3. **Ollama**, fully local and free -- just run it, no key needed
 4. **OpenAI** -- paid, used only if you set `OPENAI_API_KEY` and nothing free is configured
-5. **Offline rule-based fallback** -- if none of the above are configured, the
-   system still runs end-to-end using regex-based entity extraction and
-   extractive answering. Zero cost, zero network calls, useful for grading,
-   CI, and demos.
+5. **Offline from-scratch engine** -- if none of the above are configured, the
+   system still runs end-to-end using a pure-Python answer engine
+   (`src/scratch_engine.py`) that scores and ranks sentences from the
+   retrieved context and cites the exact chunk each one came from. Zero cost,
+   zero network calls, useful for grading, CI, and demos.
 
 Copy `.env.example` to `.env` and fill in one key to upgrade from offline
 mode to full LLM reasoning. Groq's and Gemini's free tiers, and Ollama, cost
@@ -115,11 +116,10 @@ possible topic -- while still being transparent about what it actually
 knows versus what it's recalling from the model's training data.
 
 **Note:** this fallback only works when a real LLM provider is configured
-(Groq/Gemini/Ollama/OpenAI). The offline rule-based fallback mode has no
-general knowledge of its own -- it can only extract from what's in your
-documents, so out-of-scope questions in offline mode will still come back
-empty. Add a free-tier key (see `.env.example`) to get general-knowledge
-fallback.
+(Groq/Gemini/Ollama/OpenAI). The offline from-scratch engine has no general
+knowledge of its own -- it can only extract from what's in your documents,
+so out-of-scope questions in offline mode will still come back empty. Add a
+free-tier key (see `.env.example`) to get general-knowledge fallback.
 
 ## Known limitations
 
@@ -135,9 +135,10 @@ service. Specifically:
   OpenAI-embeddings retriever is a drop-in replacement for `HybridRetriever`.
 - **NetworkX, not a graph database.** Fine for a few thousand nodes in
   memory; a corpus with millions of entities would want Neo4j or similar.
-- **The offline rule-based fallback is intentionally simple** (regex entity
-  extraction, extractive answers). It exists to keep the system runnable
-  with zero cost/config, not to match a real LLM's quality -- configure a
+- **The offline from-scratch engine is intentionally simple** (keyword/IDF
+  sentence scoring + regex entity extraction, extractive answers with
+  citations). It exists to keep the system runnable and useful with zero
+  cost/config, not to match a real LLM's reasoning quality -- configure a
   free-tier key (Groq/Gemini) or Ollama for real reasoning.
 - **Render's free tier sleeps after inactivity**, so the first request after
   idling takes 30-50 seconds to wake up (graph caching means it won't
@@ -183,7 +184,8 @@ deterministic and require no API key.
 │   └── KnowledgeGraph_AI_MultiAgent_RAG.ipynb
 ├── src/
 │   ├── config.py               # env-driven settings
-│   ├── llm_provider.py         # provider-agnostic LLM client + offline fallback
+│   ├── llm_provider.py         # provider-agnostic LLM client + offline engine
+│   ├── scratch_engine.py       # from-scratch answer engine (offline path)
 │   ├── text_utils.py           # loading + chunking
 │   ├── knowledge_graph.py      # Graph Builder Agent
 │   ├── retriever.py            # Retrieval Agent
@@ -191,5 +193,8 @@ deterministic and require no API key.
 │   ├── graph_orchestrator.py   # LangGraph wiring
 │   └── main.py                 # CLI entry point
 └── tests/
-    └── test_basic.py
+    ├── conftest.py             # forces offline mode for deterministic tests
+    ├── test_basic.py
+    ├── test_app.py
+    └── test_scratch_engine.py
 ```
