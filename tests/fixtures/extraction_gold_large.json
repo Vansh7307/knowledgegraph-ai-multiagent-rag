@@ -1,0 +1,975 @@
+[
+  {
+    "text": "The Router uses BFS.",
+    "relations": [
+      [
+        "Router",
+        "USES",
+        "BFS"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, The Router reliably uses BFS.",
+    "relations": [
+      [
+        "Router",
+        "USES",
+        "BFS"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "At runtime, The Router deterministically uses BFS.",
+    "relations": [
+      [
+        "Router",
+        "USES",
+        "BFS"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "Vector Search utilizes TF-IDF.",
+    "relations": [
+      [
+        "Vector Search",
+        "USES",
+        "TF-IDF"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, Vector Search reliably utilizes TF-IDF.",
+    "relations": [
+      [
+        "Vector Search",
+        "USES",
+        "TF-IDF"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "At runtime, Vector Search deterministically utilizes TF-IDF.",
+    "relations": [
+      [
+        "Vector Search",
+        "USES",
+        "TF-IDF"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "The Extractor orchestrates GraphRAG.",
+    "relations": [
+      [
+        "Extractor",
+        "ORCHESTRATES",
+        "GraphRAG"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, The Extractor reliably orchestrates GraphRAG.",
+    "relations": [
+      [
+        "Extractor",
+        "ORCHESTRATES",
+        "GraphRAG"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "At runtime, The Extractor deterministically orchestrates GraphRAG.",
+    "relations": [
+      [
+        "Extractor",
+        "ORCHESTRATES",
+        "GraphRAG"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "The Property Graph writes Entity.",
+    "relations": [
+      [
+        "Property Graph",
+        "WRITES_TO",
+        "Entity"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, The Property Graph reliably writes Entity.",
+    "relations": [
+      [
+        "Property Graph",
+        "WRITES_TO",
+        "Entity"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "At runtime, The Property Graph deterministically writes Entity.",
+    "relations": [
+      [
+        "Property Graph",
+        "WRITES_TO",
+        "Entity"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "The Knowledge Graph stores Triplet.",
+    "relations": [
+      [
+        "Knowledge Graph",
+        "WRITES_TO",
+        "Triplet"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, The Knowledge Graph reliably stores Triplet.",
+    "relations": [
+      [
+        "Knowledge Graph",
+        "WRITES_TO",
+        "Triplet"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "At runtime, The Knowledge Graph deterministically stores Triplet.",
+    "relations": [
+      [
+        "Knowledge Graph",
+        "WRITES_TO",
+        "Triplet"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "PageRank computes IDF.",
+    "relations": [
+      [
+        "PageRank",
+        "COMPUTES",
+        "IDF"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, PageRank reliably computes IDF.",
+    "relations": [
+      [
+        "PageRank",
+        "COMPUTES",
+        "IDF"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "At runtime, PageRank deterministically computes IDF.",
+    "relations": [
+      [
+        "PageRank",
+        "COMPUTES",
+        "IDF"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "BFS calculates PageRank.",
+    "relations": [
+      [
+        "BFS",
+        "COMPUTES",
+        "PageRank"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, BFS reliably calculates PageRank.",
+    "relations": [
+      [
+        "BFS",
+        "COMPUTES",
+        "PageRank"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "At runtime, BFS deterministically calculates PageRank.",
+    "relations": [
+      [
+        "BFS",
+        "COMPUTES",
+        "PageRank"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "The Router routes to Neo4j.",
+    "relations": [
+      [
+        "Router",
+        "ROUTES_TO",
+        "Neo4j"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, The Router reliably routes to Neo4j.",
+    "relations": [
+      [
+        "Router",
+        "ROUTES_TO",
+        "Neo4j"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "At runtime, The Router deterministically routes to Neo4j.",
+    "relations": [
+      [
+        "Router",
+        "ROUTES_TO",
+        "Neo4j"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "GraphRAG powers Vector Search.",
+    "relations": [
+      [
+        "GraphRAG",
+        "POWERS",
+        "Vector Search"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, GraphRAG reliably powers Vector Search.",
+    "relations": [
+      [
+        "GraphRAG",
+        "POWERS",
+        "Vector Search"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "At runtime, GraphRAG deterministically powers Vector Search.",
+    "relations": [
+      [
+        "GraphRAG",
+        "POWERS",
+        "Vector Search"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "BFS prevents Cypher.",
+    "relations": [
+      [
+        "BFS",
+        "PREVENTS",
+        "Cypher"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, BFS reliably prevents Cypher.",
+    "relations": [
+      [
+        "BFS",
+        "PREVENTS",
+        "Cypher"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "At runtime, BFS deterministically prevents Cypher.",
+    "relations": [
+      [
+        "BFS",
+        "PREVENTS",
+        "Cypher"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "The Knowledge Graph connects to Neo4j.",
+    "relations": [
+      [
+        "Knowledge Graph",
+        "CONNECTS_TO",
+        "Neo4j"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, The Knowledge Graph reliably connects to Neo4j.",
+    "relations": [
+      [
+        "Knowledge Graph",
+        "CONNECTS_TO",
+        "Neo4j"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "At runtime, The Knowledge Graph deterministically connects to Neo4j.",
+    "relations": [
+      [
+        "Knowledge Graph",
+        "CONNECTS_TO",
+        "Neo4j"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "Vector Search retrieves Chunk.",
+    "relations": [
+      [
+        "Vector Search",
+        "RETRIEVES",
+        "Chunk"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, Vector Search reliably retrieves Chunk.",
+    "relations": [
+      [
+        "Vector Search",
+        "RETRIEVES",
+        "Chunk"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "At runtime, Vector Search deterministically retrieves Chunk.",
+    "relations": [
+      [
+        "Vector Search",
+        "RETRIEVES",
+        "Chunk"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "The Extractor extracts PDF.",
+    "relations": [
+      [
+        "Extractor",
+        "EXTRACTS",
+        "PDF"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, The Extractor reliably extracts PDF.",
+    "relations": [
+      [
+        "Extractor",
+        "EXTRACTS",
+        "PDF"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "At runtime, The Extractor deterministically extracts PDF.",
+    "relations": [
+      [
+        "Extractor",
+        "EXTRACTS",
+        "PDF"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "The Synthesizer combines GraphRAG.",
+    "relations": [
+      [
+        "Synthesizer",
+        "COMBINES",
+        "GraphRAG"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, The Synthesizer reliably combines GraphRAG.",
+    "relations": [
+      [
+        "Synthesizer",
+        "COMBINES",
+        "GraphRAG"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "At runtime, The Synthesizer deterministically combines GraphRAG.",
+    "relations": [
+      [
+        "Synthesizer",
+        "COMBINES",
+        "GraphRAG"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "The Extractor creates Triplet.",
+    "relations": [
+      [
+        "Extractor",
+        "CREATES",
+        "Triplet"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, The Extractor reliably creates Triplet.",
+    "relations": [
+      [
+        "Extractor",
+        "CREATES",
+        "Triplet"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "At runtime, The Extractor deterministically creates Triplet.",
+    "relations": [
+      [
+        "Extractor",
+        "CREATES",
+        "Triplet"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "The Router generates Cypher.",
+    "relations": [
+      [
+        "Router",
+        "GENERATES",
+        "Cypher"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, The Router reliably generates Cypher.",
+    "relations": [
+      [
+        "Router",
+        "GENERATES",
+        "Cypher"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "At runtime, The Router deterministically generates Cypher.",
+    "relations": [
+      [
+        "Router",
+        "GENERATES",
+        "Cypher"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "BFS enables GraphRAG.",
+    "relations": [
+      [
+        "BFS",
+        "ENABLES",
+        "GraphRAG"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "During ingestion, BFS reliably enables GraphRAG.",
+    "relations": [
+      [
+        "BFS",
+        "ENABLES",
+        "GraphRAG"
+      ]
+    ],
+    "category": "active"
+  },
+  {
+    "text": "The graph is traversed by the Router.",
+    "relations": [
+      [
+        "Router",
+        "TRAVERSES",
+        "Graph"
+      ]
+    ],
+    "category": "passive"
+  },
+  {
+    "text": "The BFS algorithm is used by the Router.",
+    "relations": [
+      [
+        "Router",
+        "USES",
+        "BFS"
+      ]
+    ],
+    "category": "passive"
+  },
+  {
+    "text": "The Vector Search is powered by GraphRAG.",
+    "relations": [
+      [
+        "GraphRAG",
+        "POWERS",
+        "Vector Search"
+      ]
+    ],
+    "category": "passive"
+  },
+  {
+    "text": "The PDF is parsed by the Extractor.",
+    "relations": [
+      [
+        "Extractor",
+        "EXTRACTS",
+        "PDF"
+      ]
+    ],
+    "category": "passive"
+  },
+  {
+    "text": "The Triplet is stored by the Property Graph.",
+    "relations": [
+      [
+        "Property Graph",
+        "WRITES_TO",
+        "Triplet"
+      ]
+    ],
+    "category": "passive"
+  },
+  {
+    "text": "The Extractor parses text and writes triplets to Neo4j.",
+    "relations": [
+      [
+        "Extractor",
+        "EXTRACTS",
+        "Text"
+      ],
+      [
+        "Extractor",
+        "WRITES_TO",
+        "Neo4j"
+      ]
+    ],
+    "category": "compound"
+  },
+  {
+    "text": "The Router uses BFS and computes PageRank.",
+    "relations": [
+      [
+        "Router",
+        "USES",
+        "BFS"
+      ],
+      [
+        "Router",
+        "COMPUTES",
+        "PageRank"
+      ]
+    ],
+    "category": "compound"
+  },
+  {
+    "text": "GraphRAG combines Vector Search while the Synthesizer retrieves Chunk.",
+    "relations": [
+      [
+        "GraphRAG",
+        "COMBINES",
+        "Vector Search"
+      ],
+      [
+        "Synthesizer",
+        "RETRIEVES",
+        "Chunk"
+      ]
+    ],
+    "category": "compound"
+  },
+  {
+    "text": "The Extractor extracts PDF and generates Cypher.",
+    "relations": [
+      [
+        "Extractor",
+        "EXTRACTS",
+        "PDF"
+      ],
+      [
+        "Extractor",
+        "GENERATES",
+        "Cypher"
+      ]
+    ],
+    "category": "compound"
+  },
+  {
+    "text": "The Knowledge Graph stores Entity and connects to Neo4j.",
+    "relations": [
+      [
+        "Knowledge Graph",
+        "WRITES_TO",
+        "Entity"
+      ],
+      [
+        "Knowledge Graph",
+        "CONNECTS_TO",
+        "Neo4j"
+      ]
+    ],
+    "category": "compound"
+  },
+  {
+    "text": "The Router routes to Neo4j and the Synthesizer combines GraphRAG.",
+    "relations": [
+      [
+        "Router",
+        "ROUTES_TO",
+        "Neo4j"
+      ],
+      [
+        "Synthesizer",
+        "COMBINES",
+        "GraphRAG"
+      ]
+    ],
+    "category": "compound"
+  },
+  {
+    "text": "The BFS prevents Cypher and enables GraphRAG.",
+    "relations": [
+      [
+        "BFS",
+        "PREVENTS",
+        "Cypher"
+      ],
+      [
+        "BFS",
+        "ENABLES",
+        "GraphRAG"
+      ]
+    ],
+    "category": "compound"
+  },
+  {
+    "text": "Vector Search retrieves Chunk and uses TF-IDF.",
+    "relations": [
+      [
+        "Vector Search",
+        "RETRIEVES",
+        "Chunk"
+      ],
+      [
+        "Vector Search",
+        "USES",
+        "TF-IDF"
+      ]
+    ],
+    "category": "compound"
+  },
+  {
+    "text": "The Extractor parses Text, and the Router routes to Neo4j.",
+    "relations": [
+      [
+        "Extractor",
+        "EXTRACTS",
+        "Text"
+      ],
+      [
+        "Router",
+        "ROUTES_TO",
+        "Neo4j"
+      ]
+    ],
+    "category": "compound"
+  },
+  {
+    "text": "The Property Graph writes Entity while PageRank computes IDF.",
+    "relations": [
+      [
+        "Property Graph",
+        "WRITES_TO",
+        "Entity"
+      ],
+      [
+        "PageRank",
+        "COMPUTES",
+        "IDF"
+      ]
+    ],
+    "category": "compound"
+  },
+  {
+    "text": "Vector search does not use Cypher traversal.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "The Router never uses Neo4j.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "The Extractor does not write Triplet to SQLite.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "BFS does not compute PageRank.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "GraphRAG is not powered by OpenAI.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "The Router does not route to Neo4j.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "The Knowledge Graph never connects to SQLite.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "The Synthesizer does not combine GraphRAG.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "The Extractor does not parse PDF.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "PageRank does not calculate IDF.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "The Property Graph does not store Entity.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "Vector Search never retrieves Chunk.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "The Router is not built on Python.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "The Extractor does not orchestrate GraphRAG.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "BFS never prevents Cypher.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "The Synthesizer does not generate Cypher.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "The Router uses no Cypher.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "The Vector Search does not use BFS or PageRank.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "The Extractor is not used by the Router.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "The Graph is not traversed by the Router.",
+    "relations": [],
+    "category": "negation"
+  },
+  {
+    "text": "The Router uses BFS. It computes PageRank.",
+    "relations": [
+      ["Router", "USES", "BFS"]
+    ],
+    "category": "pronoun-abstention"
+  },
+  {
+    "text": "The Extractor parses Text. They store Triplet.",
+    "relations": [
+      ["Extractor", "EXTRACTS", "Text"]
+    ],
+    "category": "pronoun-abstention"
+  },
+  {
+    "text": "Vector Search retrieves Chunk. This connects to Neo4j.",
+    "relations": [
+      ["Vector Search", "RETRIEVES", "Chunk"]
+    ],
+    "category": "pronoun-abstention"
+  },
+  {
+    "text": "The Synthesizer combines GraphRAG. It generates Cypher.",
+    "relations": [
+      ["Synthesizer", "COMBINES", "GraphRAG"]
+    ],
+    "category": "pronoun-abstention"
+  },
+  {
+    "text": "The Property Graph stores Entity. It uses SQLite.",
+    "relations": [
+      ["Property Graph", "WRITES_TO", "Entity"]
+    ],
+    "category": "pronoun-abstention"
+  },
+  {
+    "text": "The Router and the Extractor.",
+    "relations": [],
+    "category": "edge-case"
+  },
+  {
+    "text": "BFS, PageRank, and Cypher are discussed together.",
+    "relations": [],
+    "category": "edge-case"
+  },
+  {
+    "text": "The Router uses BFS, but Vector Search does not use Cypher.",
+    "relations": [
+      [
+        "Router",
+        "USES",
+        "BFS"
+      ]
+    ],
+    "category": "edge-case"
+  },
+  {
+    "text": "Router BFS PageRank Neo4j without a relationship predicate.",
+    "relations": [],
+    "category": "edge-case"
+  },
+  {
+    "text": "The Extractor writes the result, then the Router reviews it.",
+    "relations": [],
+    "category": "edge-case"
+  },
+  {
+    "text": "It routes to Neo4j.",
+    "relations": [],
+    "category": "edge-case"
+  },
+  {
+    "text": "The system is reliable and deterministic.",
+    "relations": [],
+    "category": "edge-case"
+  },
+  {
+    "text": "The Router uses BFS and the Synthesizer combines GraphRAG.",
+    "relations": [
+      [
+        "Router",
+        "USES",
+        "BFS"
+      ],
+      [
+        "Synthesizer",
+        "COMBINES",
+        "GraphRAG"
+      ]
+    ],
+    "category": "edge-case"
+  },
+  {
+    "text": "The Knowledge Graph contains no explicit predicate here.",
+    "relations": [],
+    "category": "edge-case"
+  },
+  {
+    "text": "The Router may use BFS or may use PageRank.",
+    "relations": [
+      [
+        "Router",
+        "USES",
+        "BFS"
+      ]
+    ],
+    "category": "edge-case"
+  }
+]

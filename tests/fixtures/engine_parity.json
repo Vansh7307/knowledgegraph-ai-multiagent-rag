@@ -1,0 +1,27 @@
+{
+  "chunks": [
+    {
+      "chunk_id": "parity-a::chunk0",
+      "source": "parity-a.txt",
+      "text": "The Router routes queries to Vector Search. Vector Search uses TF-IDF."
+    },
+    {
+      "chunk_id": "parity-b::chunk0",
+      "source": "parity-b.txt",
+      "text": "TF-IDF computes relevance. PageRank computes centrality. The Knowledge Graph stores entities."
+    },
+    {
+      "chunk_id": "parity-c::chunk0",
+      "source": "parity-c.txt",
+      "text": "The Knowledge Graph is traversed by the Router. The Extractor parses text and writes triplets to Neo4j."
+    }
+  ],
+  "queries": [
+    "What is the directed path from Router to TF-IDF?",
+    "Vector Search relevance"
+  ],
+  "traversal": {
+    "starts": ["Router"],
+    "max_hops": 2
+  }
+}

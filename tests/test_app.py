@@ -28,7 +28,7 @@ def test_query_returns_grounded_answer():
         assert response.status_code == 200
         body = response.json()
         assert "answer" in body and len(body["answer"]) > 0
-        assert body["hops"] >= 1
+        assert body["hops"] == 0
 
 
 def test_browser_chunks_can_sync_to_the_local_backend():
@@ -60,6 +60,8 @@ def test_demo_ingestion_streams_progress_and_completion_events():
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/event-stream")
         assert "event: progress" in response.text
+        assert '"chunk":' in response.text
+        assert '"graph":' in response.text
         assert "event: done" in response.text
 
 

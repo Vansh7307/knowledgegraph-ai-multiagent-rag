@@ -207,5 +207,5 @@ def test_graph_answer_reports_absence_of_a_directed_connection():
     result = engine.query("How are Router and Knowledge Graph connected?")
 
     assert result["strategy"] == "graph"
-    assert result["hops"] == 1
+    assert result["hops"] == 0
     assert "No directed path was found from Router to Knowledge Graph" in result["answer"]

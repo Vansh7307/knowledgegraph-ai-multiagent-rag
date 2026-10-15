@@ -1,0 +1,30 @@
+[
+  {
+    "text": "The Router routes queries to Vector Search.",
+    "relations": [["Router", "ROUTES_TO", "Vector Search"]]
+  },
+  {
+    "text": "Vector Search uses TF-IDF.",
+    "relations": [["Vector Search", "USES", "TF-IDF"]]
+  },
+  {
+    "text": "TF-IDF computes Relevance Score.",
+    "relations": [["TF-IDF", "COMPUTES", "Relevance Score"]]
+  },
+  {
+    "text": "PageRank computes Centrality Metric.",
+    "relations": [["PageRank", "COMPUTES", "Centrality Metric"]]
+  },
+  {
+    "text": "The Knowledge Graph stores Entity Index.",
+    "relations": [["Knowledge Graph", "WRITES_TO", "Entity Index"]]
+  },
+  {
+    "text": "The Router does not use the Knowledge Graph.",
+    "relations": []
+  },
+  {
+    "text": "The Extractor extracts entities, the Router routes queries, and the Synthesizer combines evidence.",
+    "relations": []
+  }
+]

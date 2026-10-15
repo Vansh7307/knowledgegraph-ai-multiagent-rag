@@ -282,8 +282,10 @@ async def ingest_demo():
                 "total": total,
                 "progress": round(index / total * 100),
                 "chunk_id": chunk.chunk_id,
+                "chunk": {"chunk_id": chunk.chunk_id, "source": chunk.source, "text": chunk.text},
                 "node_count": len(engine.graph.nodes),
                 "edge_count": len(engine.graph.edges),
+                "graph": engine.graph_payload(),
             }
             yield f"event: progress\ndata: {json.dumps(payload)}\n\n"
         result = {

@@ -105,7 +105,7 @@ export default function IngestionPanel({ nodeCount, edgeCount, chunkCount, onIng
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
           {[["Chunks", chunkCount], ["Entities", nodeCount], ["Triplets", edgeCount]].map(([label, count]) => (
             <div key={label} style={{ padding: "8px 3px", textAlign: "center", borderRadius: 6, background: "var(--panel2)", border: "1px solid var(--border)" }}>
-              <div style={{ color: "var(--teal)", fontWeight: 700, fontFamily: "JetBrains Mono, monospace" }}>{count}</div>
+              <div data-testid={`metric-${String(label).toLowerCase()}`} style={{ color: "var(--teal)", fontWeight: 700, fontFamily: "JetBrains Mono, monospace" }}>{count}</div>
               <div style={{ color: "var(--muted)", fontSize: "0.62rem" }}>{label}</div>
             </div>
           ))}

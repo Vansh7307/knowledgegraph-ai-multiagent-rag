@@ -34,6 +34,14 @@ The service reads local `.txt` files from `data/sample_docs` at startup and prov
 
 The TF-IDF implementation uses normalized term frequency and smoothed `IDF = log((1 + N) / (1 + df)) + 1`; cosine similarity is the normalized vector dot product. Relationship extraction abstains when a supported predicate and subject/object pattern are not found. Extracted relations remain heuristic, so answers label them as such and include source chunk IDs rather than claiming a formal fact-verification guarantee. When neither source chunks nor graph relationships match, the engine says so instead of inventing an answer.
 
+## Engine parity and extraction evaluation
+
+Run `python -m pytest tests -q` to execute shared JSON fixtures through Python and TypeScript and compare graph nodes, directed edges, PageRank, BFS results, path nodes/hops, confidence inputs, and ranked chunk IDs/scores. The parity test uses the local TypeScript compiler already installed with the frontend dependencies. Run `python tests/evaluate_extraction.py` to print precision, recall, macro/micro F1, and false-positive rates for the 100-sentence gold fixture. These fixture metrics are not a claim about arbitrary documents.
+
+Run `python -m pytest tests/test_extraction_robustness.py -q` for the 100-sentence labeled extraction benchmark, including passive voice, coordinated predicates, negation, and pronoun abstention. It reports macro and micro precision/recall/F1 and sentence-level false-positive rate. Run `python -m src.benchmark` for a JSON report of ingestion throughput, 10,000-node BFS latency, TF-IDF scoring, and graph/text/hybrid query latency; the command exits nonzero if the measured p95 targets are missed. `npm run test:benchmark` checks TypeScript engine ingestion and query behavior.
+
+Install the frontend development dependencies and Chromium once with `npm install` and `npx playwright install chromium`, then run `npm run test:e2e` from `frontend`. The Playwright suite starts the Next.js dev server and FastAPI backend and exercises SSE demo ingestion, mobile/desktop layouts, and settled canvas animation.
+
 ## Validation
 
 ```powershell

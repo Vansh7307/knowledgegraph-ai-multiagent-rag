@@ -7,7 +7,10 @@ interface TraceStep { agent: string; status: string; detail: string; ms: number;
 interface SourceChunk { id: string; source: string; text: string; }
 interface Message {
   id: string; role: "user" | "assistant"; text: string; error?: boolean; ts: number;
-  meta?: { hops: number; chunks: number; facts: number; strategy: string };
+  meta?: {
+    hops: number; chunks: number; facts: number; strategy: string; confidence: number;
+    confidenceBreakdown: QueryResult["confidence_breakdown"];
+  };
   trace?: TraceStep[];
   highlightedNodes?: string[];
   highlightedEdges?: { source: string; target: string }[];
@@ -138,7 +141,10 @@ export default function ChatPanel({ graphNodes = [], onQuery, onHighlight, onNod
       const data = onQuery(q);
       const msg: Message = {
         id: Math.random().toString(36).slice(2), role: "assistant", text: data.answer, ts: Date.now(),
-        meta: { hops: data.hops, chunks: data.chunks_used, facts: data.graph_facts_used, strategy: data.strategy },
+        meta: {
+          hops: data.hops, chunks: data.chunks_used, facts: data.graph_facts_used, strategy: data.strategy,
+          confidence: data.confidence, confidenceBreakdown: data.confidence_breakdown,
+        },
         trace: data.trace || [], highlightedNodes: data.highlighted_nodes || [],
         highlightedEdges: data.highlighted_edges || [], sourceChunks: data.source_chunks || [], graphFacts: data.graph_facts || [],
       };
@@ -246,8 +252,19 @@ export default function ChatPanel({ graphNodes = [], onQuery, onHighlight, onNod
               <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}>
                 <span className="badge" style={{ background: "transparent", border: "1px solid var(--border)", color: STRATEGY_COLORS[m.meta.strategy] || "var(--text2)", fontSize: "0.6rem" }}>{m.meta.strategy}</span>
                 <span className="badge" style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--text2)", fontSize: "0.6rem" }}>{m.meta.hops} hop{m.meta.hops !== 1 ? "s" : ""}</span>
+                <span className="badge badge-teal" title="Deterministic heuristic score; not a calibrated probability" style={{ fontSize: "0.6rem" }}>
+                  Deterministic Heuristic Grounding · {(m.meta.confidence * 100).toFixed(0)}%
+                </span>
                 <span className="badge" style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--text2)", fontSize: "0.6rem" }}>{m.meta.chunks} chunks</span>
                 <span className="badge" style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--text2)", fontSize: "0.6rem" }}>{m.meta.facts} facts</span>
+              </div>
+            )}
+            {m.meta && (
+              <div style={{ marginTop: 5, color: "var(--muted)", fontSize: "0.61rem", lineHeight: 1.5 }}>
+                Score breakdown: baseline {m.meta.confidenceBreakdown.baseline.toFixed(2)} ·
+                relational {m.meta.confidenceBreakdown.relational.toFixed(2)} ·
+                interrogative {m.meta.confidenceBreakdown.interrogative.toFixed(2)} ·
+                entity density {m.meta.confidenceBreakdown.entity_density.toFixed(2)}
               </div>
             )}
             {/* mobile: view highlighted graph button */}

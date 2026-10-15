@@ -35,12 +35,14 @@ export interface QueryResult {
   graph_facts_used: number;
   strategy: "graph" | "text" | "hybrid";
   confidence: number;
+  confidence_breakdown: { baseline: number; relational: number; interrogative: number; entity_density: number };
   trace: { agent: string; status: string; detail: string; ms: number; strategy?: string; confidence?: number }[];
   highlighted_nodes: string[];
   highlighted_edges: { source: string; target: string; relation: string }[];
   source_chunks: { id: string; source: string; text: string; score: number }[];
   graph_facts: string[];
   features: { relational_terms: number; interrogative: number; entity_density: number; matched_entities: string[] };
+  path_nodes: string[];
 }
 
 const STOPWORDS = new Set("a an and are as at be been by can do does for from how i in is it its of on or that the their this to was what when where which who why with".split(" "));
@@ -58,12 +60,14 @@ const DOMAIN: [string, EntityType][] = [
   ["Multi-Agent", "Architecture"], ["Embedding", "Concept"], ["Embeddings", "Concept"],
   ["Chunk", "Concept"], ["Entity", "Concept"], ["Relationship", "Concept"],
   ["IDF", "Metric"], ["TF", "Metric"], ["API", "Component"], ["PDF", "Component"],
+  ["Graph", "Database"], ["Text", "Concept"], ["Triplet", "Concept"], ["Cypher", "Concept"],
 ];
 const PREDICATES: [RegExp, string][] = [
-  [/\b(?:built\s+on|based\s+on|powered\s+by)\b/i, "BUILT_ON"],
+  [/\b(?:built\s+on|based\s+on)\b/i, "BUILT_ON"],
   [/\b(?:uses?|used|using|utilizes?|utilized|utilizing)\b/i, "USES"], [/\borchestrates?\b/i, "ORCHESTRATES"],
   [/\b(?:writes?|written|stores?|stored|persists?|persisted)\b/i, "WRITES_TO"], [/\b(?:computes?|computed|calculates?|calculated|ranks?|ranked)\b/i, "COMPUTES"],
-  [/\b(?:routes?|routed)(?:\s+to)?\b/i, "ROUTES_TO"], [/\b(?:powers?|powered)\b/i, "POWERS"],
+  [/\b(?:parses?|parsed)\b/i, "EXTRACTS"], [/\b(?:traverses?|traversed)\b/i, "TRAVERSES"],
+  [/\b(?:routes?|routed)(?:\s+to)?\b/i, "ROUTES_TO"],   [/\b(?:powers?|powered(?:\s+by)?)\b/i, "POWERS"],
   [/\b(?:prevents?|prevented)\b/i, "PREVENTS"], [/\b(?:connects?|connected|links?|linked)\b/i, "CONNECTS_TO"],
   [/\b(?:retrieves?|retrieved)\b/i, "RETRIEVES"], [/\b(?:extracts?|extracted)\b/i, "EXTRACTS"],
   [/\b(?:contains?|contained)\b/i, "CONTAINS"], [/\b(?:combines?|combined)\b/i, "COMBINES"],
@@ -181,9 +185,13 @@ export class ScratchGraphRAG {
       });
       names.forEach((type, name) => this.addNode(name, type, chunk.chunk_id));
       splitSentences(chunk.text).forEach((sentence) => {
-        sentence.split(/,\s*(?:and\s+)?/i).forEach((clause) => {
-          const relation = extractRelation(clause, [...names.keys()]);
-          if (relation) this.addEdge(relation.source, relation.target, relation.predicate, chunk.chunk_id, sentence);
+        let inheritedSubject: string | null = null;
+        sentence.split(/,\s*(?:and\s+)?|\s+and\s+|\s+while\s+/i).forEach((clause) => {
+          const relation = extractRelation(clause, [...names.keys()], inheritedSubject);
+          if (relation) {
+            this.addEdge(relation.source, relation.target, relation.predicate, chunk.chunk_id, sentence);
+            inheritedSubject = relation.source;
+          }
         });
       });
     });
@@ -227,7 +235,13 @@ export class ScratchGraphRAG {
         if (!reached.has(other)) { reached.add(other); queue.push({ node: other, depth: current.depth + 1 }); }
       });
     }
+
     return { nodes: [...reached], edges: [...edges] };
+  }
+
+  traverse(starts: string[], maxHops = 2): { nodes: string[]; edges: GraphEdge[] } {
+    const result = this.bfs(starts, maxHops);
+    return { nodes: result.nodes, edges: result.edges.map(({ source, target, relation, chunk_id }) => ({ source, target, relation, chunk_id })) };
   }
 
   private shortestPath(source: string, target: string): Edge[] {
@@ -243,11 +257,18 @@ export class ScratchGraphRAG {
         if (!visited.has(other)) { visited.add(other); parent.set(other, { node, edge }); queue.push(other); }
       });
     }
+
     if (!visited.has(target)) return [];
     const path: Edge[] = [];
     let node = target;
     while (parent.has(node)) { const step = parent.get(node) as { node: string; edge: Edge }; path.push(step.edge); node = step.node; }
     return path.reverse();
+  }
+
+  shortestPathBetween(source: string, target: string): GraphEdge[] {
+    return this.shortestPath(source, target).map(({ source: edgeSource, target: edgeTarget, relation, chunk_id }) => ({
+      source: edgeSource, target: edgeTarget, relation, chunk_id,
+    }));
   }
 
   private pageRank(iterations = 30, damping = 0.85): Map<string, number> {
@@ -303,7 +324,13 @@ export class ScratchGraphRAG {
     const interrogative = Number(/^\s*(how|why|which|what|who|where|when)\b/i.test(question));
     const density = Math.min(1, matched.length / Math.max(1, terms.length));
     const strategy: QueryResult["strategy"] = relational && matched.length >= 2 ? "graph" : interrogative && terms.length <= 8 && !relational ? "text" : "hybrid";
-    const confidence = Math.min(1, 0.45 + Number(Boolean(relational)) * 0.15 + interrogative * 0.12 + density * 0.2);
+    const confidence_breakdown = {
+      baseline: 0.45,
+      relational: Number(Boolean(relational)) * 0.15,
+      interrogative: interrogative * 0.12,
+      entity_density: density * 0.2,
+    };
+    const confidence = Math.min(1, Object.values(confidence_breakdown).reduce((sum, value) => sum + value, 0));
     const routerMs = Math.max(0, performance.now() - routerStart);
 
     const retrievalStart = performance.now();
@@ -358,16 +385,17 @@ export class ScratchGraphRAG {
     const totalMs = Math.max(0, performance.now() - started);
     const cypher = selectedEdges.map((edge) => `MATCH (s)-[r:${edge.relation}]->(o) WHERE s.name = '${edge.source.replace(/'/g, "''")}' AND o.name = '${edge.target.replace(/'/g, "''")}'`).join("\n");
     return {
-      answer: lines.join(" "), hops: path.length || (selectedEdges.length || ranked.length ? 1 : 0),
+      answer: lines.join(" "), hops: path.length,
       chunks_used: ranked.length, graph_facts_used: facts.length, strategy,
-      confidence: Number(confidence.toFixed(2)),
+      confidence: Number(confidence.toFixed(2)), confidence_breakdown,
       trace: [
         { agent: "Router", status: "done", detail: `Selected ${strategy}; confidence ${confidence.toFixed(2)}; relational=${relational}, interrogative=${interrogative}, entityDensity=${density.toFixed(3)}.`, ms: Number(routerMs.toFixed(2)), strategy, confidence: Number(confidence.toFixed(2)) },
         { agent: "Extractor / Retriever", status: "done", detail: `TF-IDF cosine scores ${ranked.map((item) => item.score.toFixed(4)).join(", ") || "(no matches)"}; BFS visited ${traversal.nodes.length} nodes. Cypher: ${cypher || "(no traversal)"}`, ms: Number(retrievalMs.toFixed(2)) },
         { agent: "Synthesizer", status: "done", detail: `Extractive answer from ${ranked.length} chunks and ${facts.length} heuristic graph triplets.`, ms: Number(Math.max(0, totalMs - routerMs - retrievalMs).toFixed(2)) },
       ],
       highlighted_nodes: traversal.nodes, highlighted_edges: selectedEdges.map(({ source, target, relation }) => ({ source, target, relation })),
-      source_chunks: sourceChunks, graph_facts: facts, features: { relational_terms: relational, interrogative, entity_density: Number(density.toFixed(3)), matched_entities: matched },
+      source_chunks: sourceChunks, graph_facts: facts, path_nodes: path.length ? [matched[0], ...path.map((edge) => edge.target)] : [],
+      features: { relational_terms: relational, interrogative, entity_density: Number(density.toFixed(3)), matched_entities: matched },
     };
   }
 }
@@ -378,17 +406,19 @@ function countTerms(tokens: string[]): Map<string, number> {
   return result;
 }
 
-function extractRelation(sentence: string, names: string[]): { source: string; target: string; predicate: string } | null {
+function extractRelation(sentence: string, names: string[], inheritedSubject: string | null): { source: string; target: string; predicate: string } | null {
   const match = PREDICATES.map(([pattern, predicate]) => {
     const found = pattern.exec(sentence);
     return found ? { found, predicate } : null;
   }).find((candidate) => candidate !== null);
-  if (!match || /\b(?:not|never|no)\b/i.test(sentence.slice(Math.max(0, match.found.index - 24), match.found.index))) return null;
-  const occurrences = names.flatMap((name) => {
+  if (!match || /\b(?:not|never|no)\b/i.test(sentence)) return null;
+  const allOccurrences = names.flatMap((name) => {
     const index = sentence.toLowerCase().indexOf(name.toLowerCase());
     return index < 0 ? [] : [{ start: index, end: index + name.length, name }];
   });
-  const passive = /\b(?:is|are|was|were|been|being)\s+(?:used|utilized|orchestrated|written|stored|persisted|computed|calculated|ranked|routed|powered|prevented|connected|linked|retrieved|extracted|contained|combined|created|generated|enabled|supported)\s+by\b/i.exec(sentence);
+  const occurrences = allOccurrences.filter((entry) => !allOccurrences.some((other) =>
+    other.start <= entry.start && entry.end <= other.end && other.name.length > entry.name.length));
+  const passive = /\b(?:is|are|was|were|been|being)\s+(?:used|utilized|orchestrated|written|stored|persisted|computed|calculated|ranked|routed|powered|prevented|connected|linked|retrieved|extracted|contained|combined|created|generated|enabled|supported|traversed|parsed)\s+by\b/i.exec(sentence);
   if (passive) {
     const patients = occurrences.filter((entry) => entry.end <= passive.index);
     const actors = occurrences.filter((entry) => entry.start >= passive.index + passive[0].length);
@@ -401,8 +431,9 @@ function extractRelation(sentence: string, names: string[]): { source: string; t
   }
   const before = occurrences.filter((entry) => entry.end <= match.found.index);
   const after = occurrences.filter((entry) => entry.start >= match.found.index + match.found[0].length);
-  if (!before.length || !after.length) return null;
-  const source = before.reduce((left, right) => left.start > right.start ? left : right).name;
+  if (!after.length) return null;
+  const source = before.length ? before.reduce((left, right) => left.start > right.start ? left : right).name : inheritedSubject;
+  if (!source) return null;
   const target = after.reduce((left, right) => left.start < right.start ? left : right).name;
   return source === target ? null : { source, target, predicate: match.predicate };
 }

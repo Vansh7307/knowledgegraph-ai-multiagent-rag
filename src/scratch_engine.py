@@ -27,13 +27,15 @@ RELATIONS = {
     "enables": "ENABLES", "supports": "SUPPORTS",
 }
 PREDICATE_PATTERNS = (
-    (re.compile(r"\b(?:built\s+on|based\s+on|powered\s+by)\b", re.I), "BUILT_ON"),
+    (re.compile(r"\b(?:built\s+on|based\s+on)\b", re.I), "BUILT_ON"),
     (re.compile(r"\b(?:uses?|used|using|utilizes?|utilized|utilizing)\b", re.I), "USES"),
     (re.compile(r"\borchestrates?\b", re.I), "ORCHESTRATES"),
     (re.compile(r"\b(?:writes?|written|stores?|stored|persists?|persisted)\b", re.I), "WRITES_TO"),
     (re.compile(r"\b(?:computes?|computed|calculates?|calculated|ranks?|ranked)\b", re.I), "COMPUTES"),
+    (re.compile(r"\b(?:parses?|parsed)\b", re.I), "EXTRACTS"),
+    (re.compile(r"\b(?:traverses?|traversed)\b", re.I), "TRAVERSES"),
     (re.compile(r"\b(?:routes?|routed)(?:\s+to)?\b", re.I), "ROUTES_TO"),
-    (re.compile(r"\b(?:powers?|powered)\b", re.I), "POWERS"),
+    (re.compile(r"\b(?:powers?|powered(?:\s+by)?)\b", re.I), "POWERS"),
     (re.compile(r"\b(?:prevents?|prevented)\b", re.I), "PREVENTS"),
     (re.compile(r"\b(?:connects?|connected|links?|linked)\b", re.I), "CONNECTS_TO"),
     (re.compile(r"\b(?:retrieves?|retrieved)\b", re.I), "RETRIEVES"),
@@ -60,6 +62,8 @@ DOMAIN_TERMS = {
     "Embedding": "Concept", "Embeddings": "Concept", "Chunk": "Concept",
     "Entity": "Concept", "Relationship": "Concept", "IDF": "Metric",
     "TF": "Metric", "API": "Component", "PDF": "Component",
+    "Graph": "Database", "Text": "Concept", "Triplet": "Concept",
+    "Cypher": "Concept",
 }
 
 
@@ -163,23 +167,35 @@ class PropertyGraph:
     def bfs(self, starts: list[str], max_hops: int = 2) -> tuple[list[str], list[Edge]]:
         start_nodes = list(dict.fromkeys(name for name in starts if name in self.nodes))
         reached = set(start_nodes)
-        queue = deque((name, 0) for name in start_nodes)
+        queue = start_nodes[:]
+        depths = [0] * len(queue)
         found: list[Edge] = []
-        seen_edges: set[int] = set()
-        while queue:
-            node, depth = queue.popleft()
+        cursor = 0
+        if max_hops >= len(self.nodes):
+            while cursor < len(queue):
+                node = queue[cursor]
+                cursor += 1
+                for edge in self.outgoing[node]:
+                    found.append(edge)
+                    other = edge.target
+                    if other not in reached:
+                        reached.add(other)
+                        queue.append(other)
+            return queue, found
+        while cursor < len(queue):
+            node = queue[cursor]
+            depth = depths[cursor]
+            cursor += 1
             if depth >= max_hops:
                 continue
             for edge in self.outgoing[node]:
-                key = id(edge)
-                if key not in seen_edges:
-                    found.append(edge)
-                    seen_edges.add(key)
+                found.append(edge)
                 other = edge.target
                 if other not in reached:
                     reached.add(other)
-                    queue.append((other, depth + 1))
-        return [name for name in self.nodes if name in reached], found
+                    queue.append(other)
+                    depths.append(depth + 1)
+        return queue, found
 
     def shortest_path(self, source: str, target: str) -> list[Edge]:
         if source not in self.nodes or target not in self.nodes:
@@ -261,25 +277,31 @@ def extract_entities_and_relations(text: str, max_entities: int = 80) -> dict:
     entities = sorted(found, key=lambda item: (-len(item), item))[:max_entities]
     relations: list[dict] = []
     for sentence in sentence_split(text):
-        for clause in re.split(r",\s*(?:and\s+)?", sentence):
-            present = [name for name in entities if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", clause, re.I)]
-            present.sort(key=lambda name: clause.lower().find(name.lower()))
-            if len(present) < 2:
+        inherited_subject = None
+        clauses = re.split(r",\s*(?:and\s+)?|\s+and\s+|\s+while\s+", sentence, flags=re.I)
+        for clause in clauses:
+            spans = []
+            for name in entities:
+                entity_match = re.search(rf"(?<!\w){re.escape(name)}(?!\w)", clause, re.I)
+                if entity_match:
+                    spans.append((entity_match.start(), entity_match.end(), name))
+            spans = [entry for entry in spans if not any(
+                other[0] <= entry[0] and entry[1] <= other[1] and len(other[2]) > len(entry[2])
+                for other in spans)]
+            present = [entry[2] for entry in sorted(spans, key=lambda entry: entry[0])]
+            if len(present) < 2 and not inherited_subject:
                 continue
             match = next(((predicate_match, predicate) for pattern, predicate in PREDICATE_PATTERNS
                           if (predicate_match := pattern.search(clause))), None)
             if not match:
                 continue
             predicate_match, relation = match
-            if re.search(r"\b(?:not|never|no)\b", clause[max(0, predicate_match.start() - 24):predicate_match.start()], re.I):
+            if re.search(r"\b(?:not|never|no)\b", clause, re.I):
                 continue
-            spans = [(clause.lower().find(name.lower()), clause.lower().find(name.lower()) + len(name), name)
-                     for name in present]
-            spans = [(start, end, name) for start, end, name in spans if start >= 0]
             passive = re.search(
                 r"\b(?:is|are|was|were|been|being)\s+(?:used|utilized|orchestrated|written|stored|persisted|"
                 r"computed|calculated|ranked|routed|powered|prevented|connected|linked|retrieved|extracted|"
-                r"contained|combined|created|generated|enabled|supported)\s+by\b",
+                r"contained|combined|created|generated|enabled|supported|traversed|parsed)\s+by\b",
                 clause, re.I)
             if passive:
                 patients = [entry for entry in spans if entry[1] <= passive.start()]
@@ -291,12 +313,15 @@ def extract_entities_and_relations(text: str, max_entities: int = 80) -> dict:
             else:
                 before = [entry for entry in spans if entry[1] <= predicate_match.start()]
                 after = [entry for entry in spans if entry[0] >= predicate_match.end()]
-                if not before or not after:
+                if not after:
                     continue
-                subject = max(before, key=lambda entry: entry[0])[2]
+                subject = max(before, key=lambda entry: entry[0])[2] if before else inherited_subject
+                if not subject:
+                    continue
                 obj = min(after, key=lambda entry: entry[0])[2]
             if subject != obj:
                 relations.append({"source": subject, "target": obj, "relation": relation, "text": sentence})
+                inherited_subject = subject
     return {"entities": entities, "typed_entities": [
         {"name": name, "type": found[name]} for name in entities], "relations": relations}
 
@@ -344,9 +369,16 @@ def route_query(question: str, graph: PropertyGraph) -> dict:
         strategy = "text"
     else:
         strategy = "hybrid"
-    confidence = min(1.0, 0.45 + 0.15 * bool(relational) + 0.12 * interrogative + 0.2 * density)
+    confidence_breakdown = {
+        "baseline": 0.45,
+        "relational": 0.15 * bool(relational),
+        "interrogative": 0.12 * interrogative,
+        "entity_density": 0.2 * density,
+    }
+    confidence = min(1.0, sum(confidence_breakdown.values()))
     return {
         "strategy": strategy, "confidence": round(confidence, 2),
+        "confidence_breakdown": confidence_breakdown,
         "features": {"relational_terms": relational, "interrogative": interrogative,
                      "entity_density": round(density, 3), "matched_entities": matched},
     }
@@ -390,7 +422,7 @@ class GraphRAGEngine:
             if matched and route["strategy"] != "text" else ([], [])
         )
         path_edges = []
-        if len(matched) >= 2:
+        if len(matched) >= 2 and route["strategy"] != "text":
             path_edges = self.graph.shortest_path(matched[0], matched[1])
         traversed = list(dict.fromkeys(id(edge) for edge in graph_edges + path_edges))
         edge_by_id = {id(edge): edge for edge in graph_edges + path_edges}
@@ -416,9 +448,11 @@ class GraphRAGEngine:
              "ms": synthesis_ms},
         ]
         return {
-            "answer": answer, "hops": len(path_edges) if path_edges else (1 if graph_edges or top else 0),
+            "answer": answer, "hops": len(path_edges),
             "chunks_used": len(chunks),
             "graph_facts_used": len(facts), "strategy": route["strategy"], "confidence": route["confidence"],
+            "confidence_breakdown": route["confidence_breakdown"],
+            "path_nodes": [matched[0], *[edge.target for edge in path_edges]] if path_edges else [],
             "trace": trace, "highlighted_nodes": graph_nodes, "highlighted_edges": [
                 {"source": edge.source, "target": edge.target, "relation": edge.relation}
                 for edge in selected_edges],

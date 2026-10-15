@@ -43,6 +43,7 @@ export default function GraphPanel({
   const dimensionsRef = useRef({ width: 0, height: 0 });
   const viewRef = useRef({ x: 0, y: 0, scale: 1 });
   const pointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const renderRequestRef = useRef<() => void>(() => undefined);
   const initializedTypesRef = useRef(false);
   const dragRef = useRef<{ mode: "node" | "pan" | "pinch"; node?: SimNode; x: number; y: number; initialDistance?: number; initialScale?: number } | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -79,8 +80,10 @@ export default function GraphPanel({
     const observer = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
       if (!rect) return;
+      if (rect.width === dimensionsRef.current.width && rect.height === dimensionsRef.current.height) return;
       dimensionsRef.current = { width: rect.width, height: rect.height };
       setSize({ width: rect.width, height: rect.height });
+      renderRequestRef.current();
     });
     observer.observe(host);
     return () => observer.disconnect();
@@ -97,6 +100,7 @@ export default function GraphPanel({
     const scale = Math.max(0.25, Math.min(3, Math.min((width - 100) / Math.max(1, maxX - minX + 80), (height - 100) / Math.max(1, maxY - minY + 80))));
     viewRef.current = { x: (minX + maxX) / -2, y: (minY + maxY) / -2, scale };
     setZoomLabel(Math.round(scale * 100));
+    renderRequestRef.current();
   }, []);
 
   useEffect(() => { if (nodesRef.current.length && size.width && size.height) fitToView(); }, [graphData.nodes.length, fitToView, size.width, size.height]);
@@ -108,6 +112,7 @@ export default function GraphPanel({
       const { width, height } = dimensionsRef.current;
       viewRef.current = { x: -node.x, y: -node.y, scale: Math.max(2.3, viewRef.current.scale) };
       setZoomLabel(Math.round(viewRef.current.scale * 100));
+      renderRequestRef.current();
     }
     onFocusConsumed?.();
   }, [pendingFocus, onFocusConsumed]);
@@ -117,11 +122,24 @@ export default function GraphPanel({
     if (!canvas) return;
     const context = canvas.getContext("2d");
     if (!context) return;
-    let frame = 0;
+    let frame: number | null = null;
     let running = true;
-    let settleFrames = 120;
-    const render = (time: number) => {
+    let settleFrames = nodesRef.current.length ? 120 : 0;
+    let simulationFrames = 0;
+    let stableFrames = 0;
+    let render: (time: number) => void;
+    const schedule = () => {
+      if (running && frame === null) frame = requestAnimationFrame(render);
+    };
+    renderRequestRef.current = () => {
+      simulationFrames = 0;
+      stableFrames = 0;
+      settleFrames = nodesRef.current.length ? 120 : 0;
+      schedule();
+    };
+    render = (time: number) => {
       if (!running) return;
+      frame = null;
       const dpr = window.devicePixelRatio || 1;
       const { width, height } = dimensionsRef.current;
       if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
@@ -135,7 +153,9 @@ export default function GraphPanel({
       const nodes = nodesRef.current;
       const byName = new Map(nodes.map((node) => [node.id, node]));
 
-      if (settleFrames > 0 || nodes.some((node) => Math.abs(node.vx) + Math.abs(node.vy) > 0.08)) {
+      const shouldSimulate = simulationFrames < 120 && settleFrames > 0 && stableFrames < 8;
+      if (shouldSimulate) {
+        simulationFrames += 1;
         const cellSize = 120;
         const grid = new Map<string, SimNode[]>();
         const cellKey = (x: number, y: number) => `${Math.floor(x / cellSize)},${Math.floor(y / cellSize)}`;
@@ -176,6 +196,10 @@ export default function GraphPanel({
           node.vx *= 0.86; node.vy *= 0.86;
           node.x += node.vx; node.y += node.vy;
         });
+        const meanSpeed = nodes.length
+          ? nodes.reduce((sum, node) => sum + Math.abs(node.vx) + Math.abs(node.vy), 0) / nodes.length
+          : 0;
+        stableFrames = meanSpeed < 0.025 ? stableFrames + 1 : 0;
         settleFrames = Math.max(0, settleFrames - 1);
       }
 
@@ -213,10 +237,14 @@ export default function GraphPanel({
         context.globalAlpha = 1;
       });
       context.restore();
-      frame = requestAnimationFrame(render);
+      if ((simulationFrames < 120 && settleFrames > 0 && stableFrames < 8) || highlighted.size > 0) schedule();
     };
-    frame = requestAnimationFrame(render);
-    return () => { running = false; cancelAnimationFrame(frame); };
+    schedule();
+    return () => {
+      running = false;
+      renderRequestRef.current = () => undefined;
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
   }, [graphData.links, highlighted, highlightedEdges, selected, visibleTypes]);
 
   const worldPoint = (clientX: number, clientY: number) => {
@@ -228,6 +256,7 @@ export default function GraphPanel({
   const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
     pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    renderRequestRef.current();
     if (pointersRef.current.size === 2) {
       const [first, second] = [...pointersRef.current.values()];
       dragRef.current = { mode: "pinch", x: (first.x + second.x) / 2, y: (first.y + second.y) / 2, initialDistance: Math.hypot(first.x - second.x, first.y - second.y), initialScale: viewRef.current.scale };
@@ -240,6 +269,7 @@ export default function GraphPanel({
   const handlePointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (!pointersRef.current.has(event.pointerId)) return;
     pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    renderRequestRef.current();
     const drag = dragRef.current;
     if (!drag) return;
     if (drag.mode === "pinch" && pointersRef.current.size > 1) {
@@ -279,10 +309,12 @@ export default function GraphPanel({
     } else if (!pointersRef.current.size) {
       dragRef.current = null;
     }
+    renderRequestRef.current();
   };
   const zoom = (factor: number) => {
     viewRef.current.scale = Math.max(0.2, Math.min(5, viewRef.current.scale * factor));
     setZoomLabel(Math.round(viewRef.current.scale * 100));
+    renderRequestRef.current();
   };
   const exportGraph = (format: "json" | "csv") => {
     const content = format === "json"

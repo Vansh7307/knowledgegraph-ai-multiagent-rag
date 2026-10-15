@@ -9,6 +9,8 @@ import { chunkText, demoChunks, extractPdfText, ScratchGraphRAG, type GraphData,
 
 type MobileTab = "ingest" | "graph" | "chat";
 const EMPTY_GRAPH: GraphData = { nodes: [], links: [] };
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
+const apiUrl = (path: string) => `${API_BASE}${path}`;
 
 export default function Home() {
   const engine = useRef(new ScratchGraphRAG());
@@ -31,7 +33,7 @@ export default function Home() {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 1800);
     try {
-      const response = await fetch("/api/sync", {
+      const response = await fetch(apiUrl("/api/sync"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chunks: chunks.map((chunk) => ({ ...chunk, chunk_id: `browser/${chunk.chunk_id}` })) }),
@@ -49,10 +51,9 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (document.body.dataset.localApi !== "available") return;
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 900);
-    void fetch("/api/health", { signal: controller.signal }).then((response) => {
+    void fetch(apiUrl("/api/health"), { signal: controller.signal }).then((response) => {
       if (!response.ok) return;
       backendAvailable.current = true;
       const chunks = engine.current.exportChunks();
@@ -75,15 +76,80 @@ export default function Home() {
 
   const loadDemo = useCallback(async (progress: (count: number) => void) => {
     const chunks = demoChunks();
-    for (const [index, chunk] of chunks.entries()) {
-      engine.current.ingest([chunk]);
-      setGraphData(engine.current.graphData());
-      progress(Math.round(((index + 1) / chunks.length) * 100));
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    const loadLocally = async (fallback = false) => {
+      for (const [index, chunk] of chunks.entries()) {
+        engine.current.ingest([chunk]);
+        setGraphData(engine.current.graphData());
+        progress(Math.round(((index + 1) / chunks.length) * 100));
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      }
+      setStatus(`${fallback ? "Backend stream unavailable; loaded locally" : "Enterprise demo loaded locally"}: ${engine.current.chunkCount} chunks, ${engine.current.graphData().nodes.length} entities.`);
+    };
+    if (!backendAvailable.current) {
+      await loadLocally();
+      return;
     }
-    setStatus(`Enterprise demo loaded locally: ${chunks.length} chunks, ${engine.current.graphData().nodes.length} entities.`);
-    void syncChunks(engine.current.exportChunks());
-  }, [syncChunks]);
+    await new Promise<void>((resolve) => {
+      const source = new EventSource(apiUrl("/api/ingest-demo"));
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        source.close();
+        resolve();
+      };
+      const fallback = () => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        source.close();
+        void loadLocally(true).then(resolve);
+      };
+      const timeout = window.setTimeout(fallback, 15000);
+      source.addEventListener("progress", (event: MessageEvent<string>) => {
+        try {
+          const update = JSON.parse(event.data) as {
+            completed: number;
+            total: number;
+            progress: number;
+            chunk: TextChunk;
+            node_count: number;
+            edge_count: number;
+            graph: GraphData;
+          };
+          engine.current.ingest([update.chunk]);
+          setGraphData(update.graph);
+          progress(update.progress);
+          setStatus(`Python SSE ingestion ${update.completed}/${update.total}: ${update.node_count} nodes, ${update.edge_count} edges.`);
+        } catch {
+          fallback();
+        }
+      });
+      source.addEventListener("done", (event: MessageEvent<string>) => {
+        try {
+          const result = JSON.parse(event.data) as { total_chunks: number; total_nodes: number; total_edges: number; graph: GraphData };
+          setGraphData(result.graph || engine.current.graphData());
+          progress(100);
+          setStatus(`Enterprise demo streamed from Python: ${result.total_chunks} chunks, ${result.total_nodes} nodes, ${result.total_edges} edges.`);
+          finish();
+        } catch {
+          fallback();
+        }
+      });
+      source.addEventListener("error", (event: Event) => {
+        if (event instanceof MessageEvent && event.data) {
+          try {
+            const error = JSON.parse(String(event.data)) as { message?: string };
+            setStatus(`Python demo stream failed (${error.message || "unknown server error"}); loading local corpus.`);
+          } catch {
+            setStatus("Python demo stream returned invalid data; loading local corpus.");
+          }
+        }
+        fallback();
+      });
+    });
+  }, []);
 
   const query = useCallback((question: string) => {
     const result = engine.current.query(question);
@@ -105,7 +171,7 @@ export default function Home() {
     if (backendAvailable.current) {
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 1800);
-      void fetch("/api/reset", { method: "POST", signal: controller.signal })
+      void fetch(apiUrl("/api/reset"), { method: "POST", signal: controller.signal })
         .then((response) => {
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           setStatus("Local graph and Python mirror cleared.");
