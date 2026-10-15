@@ -1,20 +1,19 @@
 "use client";
-import { useEffect, useRef, useState, useCallback } from "react";
-import dynamic from "next/dynamic";
-import axios from "axios";
-import { toast } from "./Toast";
 
-const ForceGraph2D = dynamic(() => import("react-force-graph").then(m => m.ForceGraph2D), { ssr: false });
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { GraphData, GraphNode } from "@/lib/scratchEngine";
 
-interface GraphData {
-  nodes: { id: string; label: string; degree?: number }[];
-  links: { source: string; target: string; relation: string }[];
-}
 interface NodeDetail {
-  name: string; degree: number; in_degree: number; out_degree: number;
+  name: string;
+  type: string;
+  degree: number;
+  pagerank: number;
+  in_degree: number;
+  out_degree: number;
   triplets: { subject: string; predicate: string; object: string; chunk_id: string }[];
   source_chunks: { id: string; source: string; text: string }[];
 }
+
 interface Props {
   graphData: GraphData;
   status: string;
@@ -24,328 +23,301 @@ interface Props {
   onFocusConsumed?: () => void;
   onNodeFocus?: (name: string) => void;
   onHighlightClear?: () => void;
+  getNodeDetail: (name: string) => NodeDetail | null;
+  onReset: () => void;
 }
 
-const COLORS = ["#00d4aa","#3b82f6","#8b5cf6","#f59e0b","#10b981","#ef4444","#06b6d4","#ec4899"];
-function hashColor(s: string) {
-  let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) & 0xffffffff;
-  return COLORS[Math.abs(h) % COLORS.length];
-}
+interface SimNode extends GraphNode { x: number; y: number; vx: number; vy: number; }
+const PALETTE: Record<string, string> = {
+  Architecture: "#3b82f6", Agent: "#00d4aa", Algorithm: "#8b5cf6", Database: "#f59e0b",
+  Component: "#06b6d4", Concept: "#94a3b8", Metric: "#ec4899",
+};
 
-export default function GraphPanel({ graphData, status, queryHighlightNodes = [], queryHighlightEdges = [], pendingFocus, onFocusConsumed, onNodeFocus, onHighlightClear }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const graphRef     = useRef<any>(null);
-  const [dims,          setDims]          = useState({ width: 800, height: 600 });
-  const [selectedNode,  setSelectedNode]  = useState<string | null>(null);
-  const [hoveredNode,   setHoveredNode]   = useState<string | null>(null);
-  const [clickHL,       setClickHL]       = useState<Set<string>>(new Set());
-  const [clickEdgeHL,   setClickEdgeHL]   = useState<Set<string>>(new Set());
-  const [nodeDetail,    setNodeDetail]    = useState<NodeDetail | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [showChunks,    setShowChunks]    = useState(false);
-  const [searchQ,       setSearchQ]       = useState("");
-  const [showSearch,    setShowSearch]    = useState(false);
-  const [isMobile,      setIsMobile]      = useState(false);
-  const [showSheet,     setShowSheet]     = useState(false);
+export default function GraphPanel({
+  graphData, status, queryHighlightNodes = [], queryHighlightEdges = [], pendingFocus,
+  onFocusConsumed, onNodeFocus, onHighlightClear, getNodeDetail, onReset,
+}: Props) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const nodesRef = useRef<SimNode[]>([]);
+  const dimensionsRef = useRef({ width: 0, height: 0 });
+  const viewRef = useRef({ x: 0, y: 0, scale: 1 });
+  const pointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const dragRef = useRef<{ mode: "node" | "pan" | "pinch"; node?: SimNode; x: number; y: number; initialDistance?: number; initialScale?: number } | null>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  const [selected, setSelected] = useState<NodeDetail | null>(null);
+  const [search, setSearch] = useState("");
+  const [visibleTypes, setVisibleTypes] = useState<Set<string>>(new Set());
+  const [zoomLabel, setZoomLabel] = useState(100);
+  const [showInspector, setShowInspector] = useState(false);
+  const highlighted = useMemo(() => new Set(queryHighlightNodes), [queryHighlightNodes]);
+  const highlightedEdges = useMemo(() => new Set(queryHighlightEdges.map((edge) => `${edge.source}||${edge.target}`)), [queryHighlightEdges]);
+  const nodeTypes = useMemo(() => [...new Set(graphData.nodes.map((node) => node.type))], [graphData.nodes]);
 
   useEffect(() => {
-    const check = () => setIsMobile(window.innerWidth < 1024);
-    check();
-    window.addEventListener("resize", check);
-    return () => window.removeEventListener("resize", check);
+    const previous = new Map(nodesRef.current.map((node) => [node.id, node]));
+    nodesRef.current = graphData.nodes.map((node, index) => {
+      const old = previous.get(node.id);
+      const angle = index * 2.39996;
+      const radius = 18 * Math.sqrt(index + 1);
+      return { ...node, x: old?.x ?? Math.cos(angle) * radius, y: old?.y ?? Math.sin(angle) * radius, vx: old?.vx ?? 0, vy: old?.vy ?? 0 };
+    });
+    if (visibleTypes.size === 0 && nodeTypes.length) setVisibleTypes(new Set(nodeTypes));
+  }, [graphData.nodes, nodeTypes, visibleTypes.size]);
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const observer = new ResizeObserver((entries) => {
+      const rect = entries[0]?.contentRect;
+      if (!rect) return;
+      dimensionsRef.current = { width: rect.width, height: rect.height };
+      setSize({ width: rect.width, height: rect.height });
+    });
+    observer.observe(host);
+    return () => observer.disconnect();
   }, []);
 
-  useEffect(() => {
-    const update = () => {
-      if (containerRef.current) setDims({ width: containerRef.current.clientWidth, height: containerRef.current.clientHeight });
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    if (containerRef.current) ro.observe(containerRef.current);
-    return () => ro.disconnect();
+  const fitToView = useCallback(() => {
+    const nodes = nodesRef.current;
+    const { width, height } = dimensionsRef.current;
+    if (!nodes.length || !width || !height) return;
+    const minX = Math.min(...nodes.map((node) => node.x));
+    const maxX = Math.max(...nodes.map((node) => node.x));
+    const minY = Math.min(...nodes.map((node) => node.y));
+    const maxY = Math.max(...nodes.map((node) => node.y));
+    const scale = Math.max(0.25, Math.min(3, Math.min((width - 100) / Math.max(1, maxX - minX + 80), (height - 100) / Math.max(1, maxY - minY + 80))));
+    viewRef.current = { x: (minX + maxX) / -2, y: (minY + maxY) / -2, scale };
+    setZoomLabel(Math.round(scale * 100));
   }, []);
 
-  /* pendingFocus: zoom to node requested from chat */
+  useEffect(() => { if (nodesRef.current.length) fitToView(); }, [graphData.nodes.length, fitToView]);
+
   useEffect(() => {
-    if (!pendingFocus || !graphRef.current) return;
-    const gd = graphRef.current._graphData;
-    if (!gd) return;
-    const node = gd.nodes?.find((n: any) => n.id === pendingFocus);
+    if (!pendingFocus) return;
+    const node = nodesRef.current.find((entry) => entry.id === pendingFocus);
     if (node) {
-      graphRef.current.centerAt(node.x, node.y, 600);
-      graphRef.current.zoom(3.5, 600);
+      const { width, height } = dimensionsRef.current;
+      viewRef.current = { x: -node.x + width / 2 / viewRef.current.scale, y: -node.y + height / 2 / viewRef.current.scale, scale: Math.max(2.3, viewRef.current.scale) };
+      setZoomLabel(Math.round(viewRef.current.scale * 100));
     }
     onFocusConsumed?.();
   }, [pendingFocus, onFocusConsumed]);
 
-  const handleNodeClick = useCallback(async (node: any) => {
-    const id = node.id as string;
-    if (id === selectedNode) { setSelectedNode(null); setClickHL(new Set()); setClickEdgeHL(new Set()); setNodeDetail(null); setShowSheet(false); return; }
-    setSelectedNode(id);
-    const conn = new Set<string>([id]);
-    const edgeKeys = new Set<string>();
-    graphData.links.forEach(l => {
-      const s = typeof l.source === "object" ? (l.source as any).id : l.source;
-      const t = typeof l.target === "object" ? (l.target as any).id : l.target;
-      if (s === id || t === id) { conn.add(s); conn.add(t); edgeKeys.add(`${s}||${t}`); }
-    });
-    setClickHL(conn); setClickEdgeHL(edgeKeys);
-    setDetailLoading(true); setNodeDetail(null); setShowChunks(false); setShowSheet(true);
-    try {
-      const { data } = await axios.get<NodeDetail>(`/api/node-detail?name=${encodeURIComponent(id)}`);
-      setNodeDetail(data);
-    } catch {}
-    finally { setDetailLoading(false); }
-    onNodeFocus?.(id);
-  }, [selectedNode, graphData.links, onNodeFocus]);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    let frame = 0;
+    let running = true;
+    const render = (time: number) => {
+      if (!running) return;
+      const dpr = window.devicePixelRatio || 1;
+      const { width, height } = dimensionsRef.current;
+      if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+        canvas.width = Math.round(width * dpr);
+        canvas.height = Math.round(height * dpr);
+      }
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      context.clearRect(0, 0, width, height);
+      context.fillStyle = "#080c12";
+      context.fillRect(0, 0, width, height);
+      const nodes = nodesRef.current;
+      const byName = new Map(nodes.map((node) => [node.id, node]));
 
-  const clearSelection = useCallback(() => {
-    setSelectedNode(null); setClickHL(new Set()); setClickEdgeHL(new Set()); setNodeDetail(null); setShowSheet(false);
-  }, []);
+      // Coulomb repulsion, Hooke springs, gravity, and damped integration.
+      for (let i = 0; i < nodes.length; i += 1) {
+        const a = nodes[i];
+        for (let j = i + 1; j < nodes.length; j += 1) {
+          const b = nodes[j];
+          let dx = a.x - b.x, dy = a.y - b.y;
+          const distanceSq = Math.max(25, dx * dx + dy * dy);
+          const force = Math.min(1.8, 900 / distanceSq);
+          const distance = Math.sqrt(distanceSq);
+          dx /= distance; dy /= distance;
+          a.vx += dx * force; a.vy += dy * force;
+          b.vx -= dx * force; b.vy -= dy * force;
+        }
+        a.vx -= a.x * 0.002; a.vy -= a.y * 0.002;
+      }
+      graphData.links.forEach((edge) => {
+        const a = byName.get(edge.source), b = byName.get(edge.target);
+        if (!a || !b) return;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const distance = Math.max(1, Math.hypot(dx, dy));
+        const force = (distance - 100) * 0.0008;
+        a.vx += dx / distance * force; a.vy += dy / distance * force;
+        b.vx -= dx / distance * force; b.vy -= dy / distance * force;
+      });
+      nodes.forEach((node) => {
+        node.vx *= 0.86; node.vy *= 0.86;
+        node.x += node.vx; node.y += node.vy;
+      });
 
-  const focusNode = (name: string) => {
-    const gd = graphRef.current?._graphData;
-    const node = gd?.nodes?.find((n: any) => n.id === name);
-    if (node) { graphRef.current.centerAt(node.x, node.y, 500); graphRef.current.zoom(3, 500); }
-    setSearchQ(""); setShowSearch(false);
+      const { x: panX, y: panY, scale } = viewRef.current;
+      context.save();
+      context.translate(width / 2 + panX * scale, height / 2 + panY * scale);
+      context.scale(scale, scale);
+      graphData.links.forEach((edge) => {
+        const source = byName.get(edge.source), target = byName.get(edge.target);
+        if (!source || !target) return;
+        const active = highlightedEdges.has(`${edge.source}||${edge.target}`);
+        context.strokeStyle = highlighted.size && !active ? "rgba(40,56,72,.18)" : active ? `rgba(0,230,200,${0.65 + Math.sin(time / 250) * 0.25})` : "rgba(45,62,80,.75)";
+        context.lineWidth = active ? 2 / scale : 0.7 / scale;
+        context.beginPath(); context.moveTo(source.x, source.y); context.lineTo(target.x, target.y); context.stroke();
+      });
+      nodes.forEach((node) => {
+        if (!visibleTypes.has(node.type)) return;
+        const active = !highlighted.size || highlighted.has(node.id);
+        const radius = Math.min(11, 4 + Math.sqrt(node.degree) * 0.8);
+        const color = PALETTE[node.type] || "#94a3b8";
+        context.globalAlpha = active ? 1 : 0.14;
+        if (highlighted.has(node.id)) {
+          context.beginPath(); context.arc(node.x, node.y, radius + 6 + Math.sin(time / 250) * 2, 0, Math.PI * 2);
+          context.fillStyle = "rgba(0,212,170,.15)"; context.fill();
+        }
+        context.beginPath(); context.arc(node.x, node.y, radius, 0, Math.PI * 2);
+        context.fillStyle = color; context.shadowColor = color; context.shadowBlur = selected?.name === node.id ? 18 : 6; context.fill(); context.shadowBlur = 0;
+        if (scale > 0.65 || selected?.name === node.id) {
+          context.fillStyle = active ? "#dce6ef" : "#344252";
+          context.font = `${Math.max(8, 11 / scale)}px Inter, sans-serif`;
+          context.textAlign = "center";
+          const label = node.id.length > 24 ? `${node.id.slice(0, 22)}…` : node.id;
+          context.fillText(label, node.x, node.y + radius + 13 / scale);
+        }
+        context.globalAlpha = 1;
+      });
+      context.restore();
+      frame = requestAnimationFrame(render);
+    };
+    frame = requestAnimationFrame(render);
+    return () => { running = false; cancelAnimationFrame(frame); };
+  }, [graphData.links, highlighted, highlightedEdges, selected, visibleTypes]);
+
+  const worldPoint = (clientX: number, clientY: number) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    const view = viewRef.current;
+    return { x: (clientX - rect.left - rect.width / 2) / view.scale - view.x, y: (clientY - rect.top - rect.height / 2) / view.scale - view.y };
   };
-
-  const handleExport = async (fmt: "json" | "csv") => {
-    try {
-      const r = await axios.get(`/api/export?fmt=${fmt}`, { responseType: "blob" });
-      const url = URL.createObjectURL(r.data);
-      const a = document.createElement("a"); a.href = url; a.download = `knowledge_graph.${fmt}`; a.click();
-      URL.revokeObjectURL(url); toast(`Exported as ${fmt.toUpperCase()}`, "success");
-    } catch { toast("Export failed", "error"); }
+  const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (pointersRef.current.size === 2) {
+      const [first, second] = [...pointersRef.current.values()];
+      dragRef.current = { mode: "pinch", x: (first.x + second.x) / 2, y: (first.y + second.y) / 2, initialDistance: Math.hypot(first.x - second.x, first.y - second.y), initialScale: viewRef.current.scale };
+      return;
+    }
+    const point = worldPoint(event.clientX, event.clientY);
+    const node = [...nodesRef.current].reverse().find((entry) => Math.hypot(entry.x - point.x, entry.y - point.y) < 18 / viewRef.current.scale);
+    dragRef.current = node ? { mode: "node", node, x: event.clientX, y: event.clientY } : { mode: "pan", x: event.clientX, y: event.clientY };
   };
-
-  const handleReset = async () => {
-    try {
-      await axios.post("/api/reset");
-      clearSelection(); onHighlightClear?.();
-      toast("Graph reset", "info");
-    } catch { toast("Reset failed", "error"); }
+  const handlePointerMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!pointersRef.current.has(event.pointerId)) return;
+    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const drag = dragRef.current;
+    if (!drag) return;
+    if (drag.mode === "pinch" && pointersRef.current.size > 1) {
+      const [first, second] = [...pointersRef.current.values()];
+      const distance = Math.hypot(first.x - second.x, first.y - second.y);
+      viewRef.current.scale = Math.min(5, Math.max(0.2, (drag.initialScale || 1) * distance / Math.max(1, drag.initialDistance || 1)));
+    } else if (drag.mode === "node" && drag.node) {
+      const point = worldPoint(event.clientX, event.clientY);
+      drag.node.x = point.x; drag.node.y = point.y; drag.node.vx = 0; drag.node.vy = 0;
+    } else if (drag.mode === "pan") {
+      viewRef.current.x += (event.clientX - drag.x) / viewRef.current.scale;
+      viewRef.current.y += (event.clientY - drag.y) / viewRef.current.scale;
+      drag.x = event.clientX; drag.y = event.clientY;
+    }
+    setZoomLabel(Math.round(viewRef.current.scale * 100));
   };
-
-  const zoomIn  = () => graphRef.current?.zoom(graphRef.current.zoom() * 1.3, 300);
-  const zoomOut = () => graphRef.current?.zoom(graphRef.current.zoom() * 0.75, 300);
-  const fitView = useCallback(() => graphRef.current?.zoomToFit(400, 40), []);
-
-  const qNodes = new Set(queryHighlightNodes);
-  const qEdges = new Set(queryHighlightEdges.map(e => `${e.source}||${e.target}`));
-  const activeNodes = clickHL.size > 0 ? clickHL : qNodes;
-  const activeEdges = clickEdgeHL.size > 0 ? clickEdgeHL : qEdges;
-
-  const searchResults = searchQ.length >= 2
-    ? graphData.nodes.filter(n => n.id.toLowerCase().includes(searchQ.toLowerCase())).slice(0, 10)
-    : [];
-
-  const TOOLBAR_BTN: React.CSSProperties = { width: 28, height: 28, borderRadius: "var(--radius-sm)", background: "var(--panel2)", border: "1px solid var(--border)", color: "var(--text2)", fontSize: "0.82rem", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
-
-  const InspectorContent = () => (
-    <div style={{ padding: "12px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={{ fontSize: "0.82rem", fontWeight: 700, color: selectedNode ? hashColor(selectedNode) : "var(--text)" }}>{selectedNode}</span>
-        <button onClick={clearSelection} style={{ background: "none", color: "var(--muted)", fontSize: "0.85rem" }}>✕</button>
-      </div>
-      {detailLoading && <div className="skeleton" style={{ height: 56, borderRadius: "var(--radius-sm)" }} />}
-      {nodeDetail && !detailLoading && (
-        <>
-          <div style={{ display: "flex", gap: 6 }}>
-            {[["Degree", nodeDetail.degree], ["In", nodeDetail.in_degree], ["Out", nodeDetail.out_degree]].map(([l, v]) => (
-              <div key={l as string} style={{ flex: 1, background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "5px 4px", textAlign: "center" }}>
-                <div style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--teal)", fontFamily: "JetBrains Mono, monospace" }}>{v}</div>
-                <div style={{ fontSize: "0.58rem", color: "var(--muted)" }}>{l}</div>
-              </div>
-            ))}
-          </div>
-          <div style={{ fontSize: "0.67rem", color: "var(--text2)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Triplets</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 3, maxHeight: 130, overflowY: "auto" }}>
-            {nodeDetail.triplets.slice(0, 12).map((t, i) => (
-              <div key={i} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.68rem", background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "4px 7px" }}>
-                <span style={{ color: t.subject === selectedNode ? "var(--teal)" : "var(--blue)", fontWeight: 600, flexShrink: 0 }}>{t.subject === selectedNode ? "→" : "←"}</span>
-                <span style={{ color: "var(--muted)", fontFamily: "JetBrains Mono, monospace", fontSize: "0.6rem", flexShrink: 0, maxWidth: 80, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.predicate}</span>
-                <span style={{ color: "var(--text2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.subject === selectedNode ? t.object : t.subject}</span>
-              </div>
-            ))}
-          </div>
-          {nodeDetail.source_chunks.length > 0 && (
-            <>
-              <button onClick={() => setShowChunks(s => !s)} style={{ background: "none", color: "var(--text2)", fontSize: "0.68rem", textAlign: "left", padding: 0, display: "flex", alignItems: "center", gap: 4 }}>
-                <span style={{ color: "var(--teal)" }}>{showChunks ? "▾" : "▸"}</span> Source Context ({nodeDetail.source_chunks.length})
-              </button>
-              {showChunks && nodeDetail.source_chunks.map(c => (
-                <div key={c.id} style={{ background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "7px 9px" }}>
-                  <div style={{ fontSize: "0.6rem", color: "var(--muted)", marginBottom: 3, fontFamily: "JetBrains Mono, monospace" }}>{c.source}</div>
-                  <div style={{ fontSize: "0.7rem", color: "var(--text2)", lineHeight: 1.5 }}>{c.text}</div>
-                </div>
-              ))}
-            </>
-          )}
-        </>
-      )}
-    </div>
-  );
-
-  const headerH = 44;
-  const statusH = status ? 28 : 0;
-  const graphH  = Math.max(dims.height - headerH - statusH, 200);
+  const handlePointerUp = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = dragRef.current;
+    if (drag?.mode === "node" && drag.node && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 5) {
+      const detail = getNodeDetail(drag.node.id);
+      setSelected(detail);
+      setShowInspector(true);
+      onNodeFocus?.(drag.node.id);
+    }
+    pointersRef.current.delete(event.pointerId);
+    dragRef.current = pointersRef.current.size ? dragRef.current : null;
+  };
+  const zoom = (factor: number) => {
+    viewRef.current.scale = Math.max(0.2, Math.min(5, viewRef.current.scale * factor));
+    setZoomLabel(Math.round(viewRef.current.scale * 100));
+  };
+  const exportGraph = (format: "json" | "csv") => {
+    const content = format === "json"
+      ? JSON.stringify(graphData, null, 2)
+      : ["source,target,relation,chunk_id", ...graphData.links.map((edge) => [edge.source, edge.target, edge.relation, edge.chunk_id].map((value) => `"${String(value).replace(/"/g, '""')}"`).join(","))].join("\n");
+    const blob = new Blob([content], { type: format === "json" ? "application/json" : "text/csv" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob); link.download = `knowledge_graph.${format}`; link.click();
+    URL.revokeObjectURL(link.href);
+  };
+  const filteredNodes = graphData.nodes.filter((node) => node.id.toLowerCase().includes(search.toLowerCase())).slice(0, 8);
 
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative", background: "var(--bg)", minWidth: 0 }} ref={containerRef}>
-
-      {/* toolbar */}
-      <div style={{ height: headerH, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 12px", borderBottom: "1px solid var(--border)", background: "var(--panel)", flexShrink: 0, zIndex: 2, gap: 6 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 7, flexShrink: 0, minWidth: 0 }}>
-          <span style={{ fontSize: "0.83rem", fontWeight: 600, whiteSpace: "nowrap" }}>Knowledge Graph</span>
-          <span className="badge badge-blue" style={{ fontSize: "0.6rem" }}>{graphData.nodes.length}N</span>
-          <span className="badge badge-purple" style={{ fontSize: "0.6rem" }}>{graphData.links.length}E</span>
-          {qNodes.size > 0 && <span className="badge badge-teal" style={{ fontSize: "0.6rem" }}>⚡{qNodes.size}</span>}
+    <section style={{ display: "flex", flexDirection: "column", minWidth: 0, height: "100%", overflow: "hidden", background: "#080c12" }}>
+      <div style={{ padding: "9px 12px", borderBottom: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 8, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search entities…" aria-label="Search graph nodes" style={{ minWidth: 90, flex: 1, maxWidth: 230, background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: 6, padding: "6px 8px", color: "var(--text)", fontSize: "0.72rem" }} />
+          {filteredNodes.length > 0 && search.length >= 2 && <select aria-label="Search results" onChange={(event) => {
+            const node = nodesRef.current.find((entry) => entry.id === event.target.value);
+            if (node) {
+              const scale = Math.max(2, viewRef.current.scale);
+              viewRef.current = { x: -node.x + size.width / 2 / scale, y: -node.y + size.height / 2 / scale, scale };
+              setZoomLabel(Math.round(scale * 100));
+              setSelected(getNodeDetail(node.id)); setShowInspector(true);
+            }
+          }} defaultValue="" style={{ maxWidth: 180, background: "var(--panel2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 5, padding: 5 }}>
+            <option value="" disabled>Focus result</option>{filteredNodes.map((node) => <option key={node.id} value={node.id}>{node.id}</option>)}
+          </select>}
+          <button className="graph-control" onClick={() => zoom(1.25)} title="Zoom in">＋</button>
+          <button className="graph-control" onClick={() => zoom(0.8)} title="Zoom out">−</button>
+          <button className="graph-control" onClick={fitToView} title="Fit to view">Fit</button>
+          <span style={{ color: "var(--muted)", fontSize: "0.62rem", minWidth: 34 }}>{zoomLabel}%</span>
+          <button className="graph-control" onClick={() => exportGraph("json")} title="Export JSON">JSON</button>
+          <button className="graph-control" onClick={() => exportGraph("csv")} title="Export CSV">CSV</button>
+          <button className="graph-control" onClick={() => { setSelected(null); onHighlightClear?.(); }} title="Clear highlight">Clear</button>
+          <button className="graph-control" onClick={() => { setSelected(null); setShowInspector(false); onReset(); }} title="Reset graph">Reset</button>
         </div>
-        <div className="graph-toolbar">
-          {/* search */}
-          <div style={{ position: "relative" }}>
-            <button style={{ ...TOOLBAR_BTN, ...(showSearch ? { borderColor: "var(--teal)", color: "var(--teal)" } : {}) }} onClick={() => setShowSearch(s => !s)} title="Search nodes">🔍</button>
-            {showSearch && (
-              <div style={{ position: "absolute", top: 32, right: 0, width: 200, background: "var(--panel)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: 8, zIndex: 30, boxShadow: "var(--shadow)" }}>
-                <input autoFocus value={searchQ} onChange={e => setSearchQ(e.target.value)} placeholder="Search nodes…"
-                  style={{ width: "100%", background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", color: "var(--text)", padding: "6px 8px", fontSize: "0.78rem" }}
-                  onFocus={e => (e.target.style.borderColor = "var(--teal)")} onBlur={e => (e.target.style.borderColor = "var(--border)")} />
-                {searchResults.length > 0 && (
-                  <div style={{ marginTop: 5, display: "flex", flexDirection: "column", gap: 2, maxHeight: 150, overflowY: "auto" }}>
-                    {searchResults.map(n => (
-                      <button key={n.id} onClick={() => focusNode(n.id)}
-                        style={{ background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "5px 8px", fontSize: "0.73rem", color: "var(--text2)", textAlign: "left" }}
-                        onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--teal)"; e.currentTarget.style.color = "var(--teal)"; }}
-                        onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--text2)"; }}>
-                        {n.id}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-          {[{ l: "+", fn: zoomIn, title: "Zoom in" }, { l: "−", fn: zoomOut, title: "Zoom out" }, { l: "⊡", fn: fitView, title: "Fit view" }].map(({ l, fn, title }) => (
-            <button key={l} onClick={fn} title={title} style={TOOLBAR_BTN}
-              onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--teal)"; e.currentTarget.style.color = "var(--teal)"; }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--text2)"; }}>{l}</button>
-          ))}
-          <button onClick={() => handleExport("json")} title="Export JSON" style={TOOLBAR_BTN}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--teal)"; e.currentTarget.style.color = "var(--teal)"; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--text2)"; }}>↓J</button>
-          <button onClick={() => handleExport("csv")} title="Export CSV" style={TOOLBAR_BTN}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--teal)"; e.currentTarget.style.color = "var(--teal)"; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--text2)"; }}>↓C</button>
-          {(activeNodes.size > 0) && (
-            <button onClick={() => { clearSelection(); onHighlightClear?.(); }} title="Clear highlight" style={{ ...TOOLBAR_BTN, borderColor: "rgba(0,212,170,0.3)", color: "var(--teal)" }}>✕HL</button>
-          )}
-          <button onClick={handleReset} title="Reset graph" style={TOOLBAR_BTN}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--red)"; e.currentTarget.style.color = "var(--red)"; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--text2)"; }}>↺</button>
+        <div style={{ display: "flex", gap: 5, overflowX: "auto", whiteSpace: "nowrap" }}>
+          {nodeTypes.map((type) => <button key={type} onClick={() => setVisibleTypes((current) => {
+            const next = new Set(current);
+            if (next.has(type)) next.delete(type); else next.add(type);
+            return next;
+          })} style={{ borderRadius: 99, padding: "3px 8px", background: visibleTypes.has(type) ? `${PALETTE[type]}22` : "transparent", border: `1px solid ${visibleTypes.has(type) ? PALETTE[type] : "var(--border)"}`, color: visibleTypes.has(type) ? PALETTE[type] : "var(--muted)", fontSize: "0.62rem" }}>{type}</button>)}
         </div>
       </div>
-
-      {/* status bar */}
-      {status && (
-        <div style={{ height: statusH, padding: "0 14px", display: "flex", alignItems: "center", fontSize: "0.72rem", color: "var(--amber)", background: "rgba(245,158,11,0.05)", borderBottom: "1px solid rgba(245,158,11,0.1)", flexShrink: 0, overflow: "hidden" }}>
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{status}</span>
-        </div>
-      )}
-
-      {/* graph or empty */}
-      {graphData.nodes.length === 0 ? (
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14 }}>
-          <span style={{ fontSize: "3rem" }}>🕸️</span>
-          <p style={{ fontSize: "0.88rem", color: "var(--text2)", textAlign: "center", padding: "0 20px" }}>No graph loaded yet</p>
-          <p style={{ fontSize: "0.75rem", color: "var(--muted)", textAlign: "center", padding: "0 20px" }}>Upload a document or click "Load Enterprise Demo"</p>
-        </div>
-      ) : (
-        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
-          <ForceGraph2D
-            ref={graphRef}
-            width={dims.width}
-            height={graphH}
-            graphData={graphData}
-            backgroundColor="#080c12"
-            nodeLabel="id"
-            nodeRelSize={5}
-            linkDirectionalArrowLength={4}
-            linkDirectionalArrowRelPos={1}
-            linkCurvature={0.15}
-            cooldownTicks={80}
-            onEngineStop={fitView}
-            onNodeClick={handleNodeClick}
-            onNodeHover={(n: any) => setHoveredNode(n ? n.id : null)}
-            onBackgroundClick={clearSelection}
-            enableZoomInteraction={true}
-            enablePanInteraction={true}
-            linkColor={(link: any) => {
-              const s = typeof link.source === "object" ? link.source.id : link.source;
-              const t = typeof link.target === "object" ? link.target.id : link.target;
-              if (activeEdges.size > 0) return activeEdges.has(`${s}||${t}`) ? "rgba(0,212,170,0.85)" : "rgba(30,42,58,0.18)";
-              return "rgba(30,42,58,0.8)";
-            }}
-            linkWidth={(link: any) => {
-              const s = typeof link.source === "object" ? link.source.id : link.source;
-              const t = typeof link.target === "object" ? link.target.id : link.target;
-              return activeEdges.has(`${s}||${t}`) ? 2.5 : 0.8;
-            }}
-            nodeCanvasObject={(node: any, ctx, gs) => {
-              const id = node.id as string;
-              const isSel = id === selectedNode;
-              const isHov = id === hoveredNode;
-              const isQHL = qNodes.has(id);
-              const isAct = activeNodes.size === 0 || activeNodes.has(id);
-              const color = hashColor(id);
-              const r = isSel ? 7 : isHov ? 6.5 : 5;
-              ctx.globalAlpha = isAct ? 1 : 0.15;
-              if (isSel || isHov || isQHL) {
-                ctx.beginPath(); ctx.arc(node.x, node.y, r + 5, 0, 2 * Math.PI);
-                ctx.fillStyle = isQHL ? "rgba(0,212,170,0.18)" : color + "18"; ctx.fill();
-              }
-              ctx.beginPath(); ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
-              ctx.fillStyle = color;
-              ctx.shadowColor = color;
-              ctx.shadowBlur = isSel ? 20 : isQHL ? 16 : isHov ? 10 : 4;
-              ctx.fill(); ctx.shadowBlur = 0;
-              const fs = Math.max(10 / gs, 2.5);
-              if (gs > 0.5 || isSel || isHov) {
-                ctx.font = `${isSel ? "600 " : ""}${fs}px Inter, sans-serif`;
-                ctx.fillStyle = isAct ? "#e2e8f0" : "#2a3a4a";
-                ctx.textAlign = "center";
-                ctx.fillText(id.length > 22 ? id.slice(0, 20) + "…" : id, node.x, node.y + r + fs + 1);
-              }
-              ctx.globalAlpha = 1;
-            }}
-          />
-
-          {/* desktop inspector drawer */}
-          {selectedNode && !isMobile && (
-            <div className="inspector-drawer fade-in glass" style={{ borderRadius: "var(--radius)" }}>
-              <InspectorContent />
-            </div>
-          )}
-
-          {/* legend */}
-          <div style={{ position: "absolute", top: 10, right: 10, display: "flex", flexDirection: "column", gap: 3, zIndex: 10 }}>
-            {[{ color: "var(--teal)", label: "Query hit / Selected" }, { color: "rgba(30,42,58,0.9)", label: "Relationship" }].map(({ color, label }) => (
-              <div key={label} style={{ display: "flex", alignItems: "center", gap: 5, background: "rgba(8,12,18,0.8)", padding: "3px 8px", borderRadius: 99, backdropFilter: "blur(8px)" }}>
-                <span style={{ width: 7, height: 7, borderRadius: "50%", background: color, flexShrink: 0 }} />
-                <span style={{ fontSize: "0.6rem", color: "var(--text2)" }}>{label}</span>
-              </div>
-            ))}
+      {status && <div style={{ padding: "5px 12px", borderBottom: "1px solid var(--border)", fontSize: "0.67rem", color: "var(--text2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{status}</div>}
+      <div ref={hostRef} style={{ position: "relative", minHeight: 0, flex: 1, touchAction: "none" }}>
+        {graphData.nodes.length ? <canvas ref={canvasRef} width={size.width} height={size.height} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp} onWheel={(event) => zoom(event.deltaY < 0 ? 1.1 : 0.9)} style={{ width: "100%", height: "100%", display: "block", cursor: "grab", touchAction: "none" }} /> : (
+          <div style={{ height: "100%", display: "grid", placeContent: "center", textAlign: "center", padding: 20 }}>
+            <div style={{ fontSize: "2.5rem" }}>🕸️</div><strong style={{ margin: "8px 0" }}>Your local graph is ready</strong>
+            <span style={{ color: "var(--text2)", fontSize: "0.75rem" }}>Load the built-in corpus or add a text/PDF file.</span>
           </div>
-        </div>
-      )}
-
-      {/* mobile bottom sheet inspector */}
-      {isMobile && (
-        <div className={`inspector-sheet${showSheet && selectedNode ? "" : " hidden"}`}>
-          <div style={{ width: 40, height: 4, background: "var(--border2)", borderRadius: 99, margin: "10px auto 0" }} />
-          {selectedNode && <InspectorContent />}
-        </div>
-      )}
-    </div>
+        )}
+        {selected && <aside className={`${size.width < 1024 ? "inspector-sheet" : "inspector-drawer"} glass${showInspector ? "" : " hidden"}`} style={{ borderRadius: 10, maxHeight: 380, ...(size.width < 1024 ? { display: showInspector ? "block" : "none", bottom: 68 } : {}) }}>
+          <div style={{ padding: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+              <div><strong style={{ color: PALETTE[selected.type] }}>{selected.name}</strong><div style={{ color: "var(--muted)", fontSize: "0.65rem" }}>{selected.type}</div></div>
+              <button onClick={() => { setSelected(null); setShowInspector(false); }} aria-label="Close inspector">✕</button>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 4, margin: "10px 0" }}>
+              {[["Rank", selected.pagerank.toFixed(3)], ["Degree", selected.degree], ["In", selected.in_degree], ["Out", selected.out_degree]].map(([label, value]) => <div key={label} style={{ textAlign: "center", background: "var(--panel2)", padding: 5, borderRadius: 5 }}><b>{value}</b><div style={{ color: "var(--muted)", fontSize: "0.58rem" }}>{label}</div></div>)}
+            </div>
+            <b style={{ fontSize: "0.68rem" }}>Incoming / outgoing triplets</b>
+            <div style={{ maxHeight: 110, overflow: "auto", margin: "5px 0 8px" }}>
+              {selected.triplets.map((triplet, index) => <div key={`${triplet.chunk_id}-${index}`} style={{ fontSize: "0.65rem", color: "var(--text2)", marginBottom: 3 }}>{triplet.subject} → <span style={{ color: "var(--teal)" }}>{triplet.predicate}</span> → {triplet.object}</div>)}
+            </div>
+            <b style={{ fontSize: "0.68rem" }}>Source chunks</b>
+            {selected.source_chunks.map((chunk) => <div key={chunk.id} style={{ color: "var(--text2)", fontSize: "0.63rem", marginTop: 5 }}><b>{chunk.source}</b><div>{chunk.text}</div></div>)}
+          </div>
+        </aside>}
+        {size.width < 1024 && selected && <button onClick={() => setShowInspector((shown) => !shown)} style={{ position: "absolute", bottom: 12, right: 12, padding: "7px 10px", borderRadius: 20, background: "var(--teal)", color: "#06110f", fontWeight: 700 }}>Node details</button>}
+      </div>
+    </section>
   );
 }

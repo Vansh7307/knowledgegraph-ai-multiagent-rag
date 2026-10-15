@@ -1,228 +1,39 @@
-"""
-knowledge_graph.py
--------------------
-Graph Builder Agent: extracts entities/relations from text chunks into:
-  1. An in-memory NetworkX graph (fast, used for retrieval)
-  2. Neo4j AuraDB (cloud persistence, optional -- skipped if NEO4J_URI unset)
-
-Neo4j connection uses the official driver with connection pooling.
-"""
+"""Compatibility facade over the custom in-memory property graph."""
 
 from __future__ import annotations
 
-import hashlib
-import json
-import logging
-import os
-import re
-from typing import Optional
-
-import networkx as nx
-
-from src.llm_provider import get_llm
-from src.text_utils import Chunk
-
-logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Neo4j connection pool (module-level singleton, None if not configured)
-# ---------------------------------------------------------------------------
-_neo4j_driver = None
-
-
-def _get_neo4j_driver():
-    """Return a cached Neo4j driver, or None if NEO4J_URI is not set."""
-    global _neo4j_driver
-    if _neo4j_driver is not None:
-        return _neo4j_driver
-    uri = os.getenv("NEO4J_URI")
-    user = os.getenv("NEO4J_USERNAME", "neo4j")
-    password = os.getenv("NEO4J_PASSWORD", "")
-    if not uri:
-        return None
-    try:
-        from neo4j import GraphDatabase
-        _neo4j_driver = GraphDatabase.driver(uri, auth=(user, password), max_connection_pool_size=10)
-        _neo4j_driver.verify_connectivity()
-        logger.info("Neo4j AuraDB connected: %s", uri)
-    except Exception as e:
-        logger.warning("Neo4j connection failed (%s) -- continuing with in-memory graph only", e)
-        _neo4j_driver = None
-    return _neo4j_driver
-
-
-def _neo4j_merge_relation(driver, src: str, tgt: str, relation: str, chunk_id: str) -> None:
-    """Upsert a single relationship into Neo4j using Cypher MERGE."""
-    cypher = (
-        "MERGE (a:Entity {name: $src}) "
-        "MERGE (b:Entity {name: $tgt}) "
-        "MERGE (a)-[r:RELATION {type: $rel}]->(b) "
-        "ON CREATE SET r.chunk_id = $chunk_id"
-    )
-    with driver.session() as session:
-        session.run(cypher, src=src, tgt=tgt, rel=relation, chunk_id=chunk_id)
-
-
-EXTRACTION_SYSTEM_PROMPT = """You are an information-extraction agent in a Knowledge Graph pipeline.
-Read the passage and extract the key named entities (people, organizations,
-models, techniques, products) and the relations between them.
-
-Return ONLY a JSON list of the form:
-{"entities": ["Entity A", "Entity B"], "relations": [{"source": "Entity A", "target": "Entity B", "relation": "short verb phrase"}]}
-
-No prose, no markdown fences, JSON only."""
-
-
-def _corpus_hash(chunks: list[Chunk]) -> str:
-    """Stable hash of the corpus content, so the cache invalidates automatically
-    the moment any source document changes (add/edit/remove a .txt file)."""
-    hasher = hashlib.sha256()
-    for chunk in chunks:
-        hasher.update(chunk.chunk_id.encode("utf-8"))
-        hasher.update(chunk.text.encode("utf-8"))
-    return hasher.hexdigest()
+from src.scratch_engine import Chunk, GraphRAGEngine, PropertyGraph
 
 
 class KnowledgeGraphBuilder:
     def __init__(self):
-        self.llm = get_llm()
-        self.graph = nx.MultiDiGraph()
+        self.graph = PropertyGraph()
+        self.engine = GraphRAGEngine()
+        self.engine.graph = self.graph
+        self.llm = type("LocalInfo", (), {"info": type("Info", (), {"name": "local deterministic engine"})()})()
 
     def add_chunk(self, chunk: Chunk) -> None:
-        """Extract entities/relations from one chunk and merge into the graph."""
-        raw = self.llm.chat(EXTRACTION_SYSTEM_PROMPT, chunk.text)
-        parsed = self._safe_parse(raw)
+        self.engine.ingest([chunk])
 
-        for entity in parsed.get("entities", []):
-            self.graph.add_node(entity, mentions=self.graph.nodes.get(entity, {}).get("mentions", []) + [chunk.chunk_id])
-
-        driver = _get_neo4j_driver()
-        for rel in parsed.get("relations", []):
-            src, tgt, label = rel.get("source"), rel.get("target"), rel.get("relation", "related_to")
-            if not src or not tgt or src == tgt:
-                continue
-            self.graph.add_node(src)
-            self.graph.add_node(tgt)
-            self.graph.add_edge(src, tgt, relation=label, chunk_id=chunk.chunk_id, source_doc=chunk.source)
-            if driver:
-                try:
-                    _neo4j_merge_relation(driver, src, tgt, label, chunk.chunk_id)
-                except Exception as e:
-                    logger.warning("Neo4j write failed for (%s->%s): %s", src, tgt, e)
-
-    def build(self, chunks: list[Chunk]) -> nx.MultiDiGraph:
+    def build(self, chunks: list[Chunk]) -> PropertyGraph:
         for chunk in chunks:
             self.add_chunk(chunk)
-        logger.info("Knowledge graph built: %d nodes, %d edges", self.graph.number_of_nodes(), self.graph.number_of_edges())
         return self.graph
 
-    def build_with_cache(self, chunks: list[Chunk], cache_path: str) -> nx.MultiDiGraph:
-        """Like `build`, but reuses a cached graph on disk if the corpus is
-        unchanged, avoiding redundant LLM calls on every process restart."""
-        current_hash = _corpus_hash(chunks)
-
-        if os.path.exists(cache_path):
-            try:
-                with open(cache_path, "r", encoding="utf-8") as f:
-                    cached = json.load(f)
-                if cached.get("corpus_hash") == current_hash:
-                    self.graph = nx.node_link_graph(cached["graph"], directed=True, multigraph=True, edges="edges")
-                    logger.info(
-                        "Loaded knowledge graph from cache (%s): %d nodes, %d edges -- no LLM calls made",
-                        cache_path, self.graph.number_of_nodes(), self.graph.number_of_edges(),
-                    )
-                    return self.graph
-                logger.info("Cache at %s is stale (corpus changed) -- rebuilding", cache_path)
-            except (json.JSONDecodeError, KeyError, OSError) as e:
-                logger.warning("Could not read graph cache (%s), rebuilding: %s", cache_path, e)
-
-        self.build(chunks)
-        try:
-            os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
-            with open(cache_path, "w", encoding="utf-8") as f:
-                json.dump({"corpus_hash": current_hash, "graph": nx.node_link_data(self.graph, edges="edges")}, f)
-            logger.info("Cached knowledge graph to %s", cache_path)
-        except OSError as e:
-            logger.warning("Could not write graph cache to %s (continuing without cache): %s", cache_path, e)
-
-        return self.graph
-
-    @staticmethod
-    def _safe_parse(raw: str) -> dict:
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.strip("`")
-            cleaned = cleaned.split("\n", 1)[-1] if "\n" in cleaned else cleaned
-
-        # Some models add stray prose before/after the JSON object/list --
-        # extract the outermost {...} or [...] block if a direct parse fails.
-        def _try_load(s: str):
-            try:
-                return json.loads(s)
-            except json.JSONDecodeError:
-                return None
-
-        parsed = _try_load(cleaned)
-        if parsed is None:
-            match = re.search(r"(\{.*\}|\[.*\])", cleaned, re.S)
-            if match:
-                parsed = _try_load(match.group(1))
-
-        if parsed is None:
-            logger.warning("Could not parse extraction output, skipping chunk: %s", raw[:120])
-            return {"entities": [], "relations": []}
-
-        return KnowledgeGraphBuilder._normalize(parsed)
-
-    @staticmethod
-    def _normalize(parsed) -> dict:
-        """Coerce whatever shape the LLM returned into {"entities": [...], "relations": [...]}."""
-        if isinstance(parsed, dict):
-            entities = parsed.get("entities", [])
-            relations = parsed.get("relations", [])
-        elif isinstance(parsed, list):
-            # The model returned a bare list -- figure out what kind.
-            if all(isinstance(item, str) for item in parsed):
-                entities, relations = parsed, []
-            elif all(isinstance(item, dict) for item in parsed):
-                # Could be a list of relation dicts, or a list containing
-                # one {"entities":..., "relations":...} object.
-                if len(parsed) == 1 and ("entities" in parsed[0] or "relations" in parsed[0]):
-                    entities = parsed[0].get("entities", [])
-                    relations = parsed[0].get("relations", [])
-                else:
-                    relations = [r for r in parsed if "source" in r and "target" in r]
-                    entities = sorted({r["source"] for r in relations} | {r["target"] for r in relations})
-            else:
-                entities, relations = [], []
-        else:
-            entities, relations = [], []
-
-        # Final safety net: make sure both are the right shape.
-        entities = [e for e in entities if isinstance(e, str)]
-        relations = [r for r in relations if isinstance(r, dict) and r.get("source") and r.get("target")]
-        return {"entities": entities, "relations": relations}
+    def build_with_cache(self, chunks: list[Chunk], cache_path: str) -> PropertyGraph:
+        del cache_path
+        return self.build(chunks)
 
 
-def facts_for_entities(graph: nx.MultiDiGraph, entities: list[str], hops: int = 2) -> list[str]:
-    """Return human-readable graph facts within `hops` of the given entities."""
-    facts: list[str] = []
-    seen_nodes = {e for e in entities if e in graph}
-    frontier = set(seen_nodes)
+def facts_for_entities(graph: PropertyGraph, entities: list[str], hops: int = 2) -> list[str]:
+    _, edges = graph.bfs(entities, max_hops=hops)
+    return [f"{edge.source} --{edge.relation}--> {edge.target} (source: {edge.chunk_id})" for edge in edges]
 
-    for _ in range(hops):
-        next_frontier = set()
-        for node in frontier:
-            for _, target, data in graph.out_edges(node, data=True):
-                facts.append(f"{node} --{data.get('relation', 'related_to')}--> {target} (source: {data.get('chunk_id')})")
-                next_frontier.add(target)
-            for source, _, data in graph.in_edges(node, data=True):
-                facts.append(f"{source} --{data.get('relation', 'related_to')}--> {node} (source: {data.get('chunk_id')})")
-                next_frontier.add(source)
-        frontier = next_frontier - seen_nodes
-        seen_nodes |= next_frontier
-        if not frontier:
-            break
 
-    # de-duplicate while preserving order
-    return list(dict.fromkeys(facts))
+def _graph_to_vis(graph: PropertyGraph) -> dict:
+    return {
+        "nodes": [{"id": name, "label": name, "type": entity.entity_type, "degree": graph.degree(name)}
+                  for name, entity in graph.nodes.items()],
+        "links": [{"source": edge.source, "target": edge.target, "relation": edge.relation,
+                   "chunk_id": edge.chunk_id} for edge in graph.edges],
+    }

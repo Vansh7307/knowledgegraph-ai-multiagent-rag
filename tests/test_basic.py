@@ -43,10 +43,10 @@ def test_retriever_returns_top_k():
 
 
 def test_facts_for_entities_handles_unknown_entity():
-    import networkx as nx
+    from src.scratch_engine import PropertyGraph
 
-    graph = nx.MultiDiGraph()
-    graph.add_edge("A", "B", relation="related_to", chunk_id="x::chunk0")
+    graph = PropertyGraph()
+    graph.add_edge("A", "B", "related_to", "x::chunk0", "A relates to B.")
     facts = facts_for_entities(graph, ["A"], hops=1)
     assert any("A" in f and "B" in f for f in facts)
     assert facts_for_entities(graph, ["Unknown"], hops=1) == []

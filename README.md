@@ -1,145 +1,44 @@
-# KnowledgeGraph AI — Multi-Agent RAG System
+# KnowledgeGraph AI — Offline Multi-Agent GraphRAG
 
-> **Research Motivation:** Standard LLMs suffer from severe hallucination when analyzing hundreds of connected documents because they treat every query as an isolated lookup. This project implements **GraphRAG** — a retrieval architecture that builds a persistent knowledge graph from documents and traverses it at query time — eliminating the disconnected-context failure mode.
+KnowledgeGraph AI extracts a property graph from local documents, ranks evidence with an in-house TF-IDF/cosine implementation, and answers questions with deterministic graph traversal and source citations. The browser runs the complete TypeScript engine without a backend. An optional FastAPI process exposes the same local engine for integrations; neither runtime calls an AI provider or other external service.
 
----
+## Start the browser app
 
-## Research Methodology
-
-This system is grounded in the Microsoft Research paper:
-
-> Edge, D., Trinh, H., Cheng, N., Bradley, J., Chao, A., Mody, A., Truitt, S., & Larson, J. (2024).  
-> **From Local to Global: A Graph RAG Approach to Query-Focused Summarization.**  
-> *arXiv:2404.16130*
-
-The key insight: by pre-computing a knowledge graph of entities and relationships, the system can answer **multi-hop relational queries** (e.g., *"Which organization developed the model that GPT's decoder architecture descended from?"*) that defeat standard vector-similarity RAG.
-
----
-
-## System Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     React / Next.js Frontend                    │
-│  ┌──────────────┐  ┌──────────────────────┐  ┌──────────────┐  │
-│  │  Ingestion   │  │   Graph Visualization │  │    Chat      │  │
-│  │  Panel       │  │  (react-force-graph)  │  │    Panel     │  │
-│  │  drag & drop │  │   live nodes/edges    │  │  Q&A + meta  │  │
-│  └──────┬───────┘  └──────────┬────────────┘  └──────┬───────┘  │
-└─────────┼────────────────────┼───────────────────────┼──────────┘
-          │ POST /ingest        │ GET /graph-data        │ POST /query
-          ▼                     ▼                        ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     FastAPI Backend (app.py)                    │
-│                                                                 │
-│  ┌─────────────────┐   ┌──────────────────┐  ┌──────────────┐  │
-│  │ Extractor Agent │   │  Router Agent    │  │ Synthesizer  │  │
-│  │ (agents.py)     │   │  (agents.py)     │  │ Agent        │  │
-│  │ PDF→JSON        │   │  graph|text|     │  │ (agents.py)  │  │
-│  │ entities+rels   │   │  hybrid routing  │  │ cited answer │  │
-│  └────────┬────────┘   └──────────────────┘  └──────┬───────┘  │
-│           │                                          │          │
-│  ┌────────▼────────────────────────────────────────▼────────┐  │
-│  │              LangGraph Orchestrator (graph_orchestrator)  │  │
-│  │   Retrieve → Reason (hop check) → Synthesize             │  │
-│  └────────┬──────────────────────────────────────────────────┘  │
-└───────────┼─────────────────────────────────────────────────────┘
-            │
-     ┌──────┴──────────────────────┐
-     │                             │
-     ▼                             ▼
-┌──────────────┐          ┌─────────────────┐
-│  NetworkX    │          │  Neo4j AuraDB   │
-│  (in-memory) │          │  (cloud, Cypher │
-│  fast lookup │          │   MERGE writes) │
-└──────────────┘          └─────────────────┘
+```powershell
+cd frontend
+npm install
+npm run dev
 ```
 
----
+Open `http://localhost:3000`, choose **Load Enterprise Demo**, or add a `.txt` / `.pdf` document. The demo, graph, retrieval, answers, and visualizer all run inside the browser. No account, API key, network connection, or backend startup is needed.
 
-## Three Distinct AI Agents
+## Optional Python service
 
-| Agent | Role | Output |
-|---|---|---|
-| **Extractor Agent** | Reads each document chunk, outputs structured JSON of entities (typed: Person, Org, Technology…) and relationships | `{entities, relations}` → Neo4j + NetworkX |
-| **Router Agent** | Classifies each user query as `graph`, `text`, or `hybrid` retrieval | Routing decision with reason |
-| **Synthesizer Agent** | Takes raw graph facts + retrieved chunks, writes a cited human-readable answer | Final answer with `[chunk_id]` citations |
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| Frontend | Next.js 14 (TypeScript) |
-| Graph Visualization | `react-force-graph` — interactive, draggable nodes/edges |
-| Backend | FastAPI + LangGraph |
-| Graph DB (cloud) | Neo4j AuraDB (free tier) |
-| Graph DB (in-memory) | NetworkX |
-| PDF Parsing | PyMuPDF (`fitz`) |
-| Semantic Chunking | LangChain `RecursiveCharacterTextSplitter` |
-| LLM | Groq / Gemini / Ollama / OpenAI (auto-selected) |
-
----
-
-## Quick Start
-
-### 1. Backend
-
-```bash
-cd kg_project
+```powershell
 pip install -r requirements.txt
-cp .env.example .env
-# Fill in GROQ_API_KEY (or any LLM key) and optionally NEO4J_URI
+cd frontend
+npm install
+npm run build
+cd ..
 uvicorn src.app:app --reload --port 8000
 ```
 
-### 2. Frontend
+The service reads local `.txt` files from `data/sample_docs` at startup and provides `/api/health`, `/api/graph`, `/api/query-rich`, `/api/upload`, `/api/sync`, `/api/node-detail`, and `/api/export`. Its graph is held in memory. When the page is served by FastAPI, it detects the same-origin service and asynchronously mirrors ingested chunks; browser answers remain local and do not wait for the sync. PDF upload uses the locally installed PyMuPDF package; the standalone browser uses its built-in text extraction routine.
 
-```bash
-cd kg_project/frontend
-npm install
-npm run dev
-# Open http://localhost:3000
+## From-scratch engine
+
+- `src/scratch_engine.py` implements sentence splitting and overlapping word-window chunking; technical phrase, acronym, and capitalization-based entity extraction; verb-pattern relationship extraction; adjacency and reverse-adjacency lists; keyword postings; BFS neighborhoods and shortest paths; iterative PageRank; feature-scored query routing; TF-IDF vectors; cosine similarity; generated Cypher; and cited deterministic synthesis.
+- `frontend/src/lib/scratchEngine.ts` mirrors those primitives for browser-only execution.
+- `frontend/src/components/GraphPanel.tsx` implements its own canvas rendering and force simulation (pairwise Coulomb repulsion, Hooke springs, centering force, velocity damping), pointer/touch navigation, node inspection, filters, search, and export.
+- `src/agents.py`, `src/retriever.py`, and `src/knowledge_graph.py` retain small compatibility interfaces backed by the local algorithms.
+
+The TF-IDF implementation uses term frequency and `IDF = log(N / (1 + df))`; cosine similarity is the normalized vector dot product. All answers are based on retrieved source chunks and extracted relationships. When neither contains relevant evidence, the engine says so instead of inventing an answer.
+
+## Validation
+
+```powershell
+cd frontend
+npm run build
+cd ..
+python -m pytest tests -q
 ```
-
-### 3. Neo4j AuraDB (optional but recommended)
-
-1. Create a free instance at https://neo4j.com/cloud/aura-free/
-2. Copy the connection URI, username, and password into `.env`:
-   ```
-   NEO4J_URI=neo4j+s://<your-instance>.databases.neo4j.io
-   NEO4J_USERNAME=neo4j
-   NEO4J_PASSWORD=<your-password>
-   ```
-3. Restart the backend — entities and relationships will now persist to the cloud graph.
-
----
-
-## Live Demo Narrative
-
-**Hook:** *"Standard LLMs hallucinate when asked to reason across hundreds of connected documents — they have no memory of how entities relate to each other."*
-
-**The Build:** Upload a complex PDF (research paper, business report). Watch the **Knowledge Graph panel** dynamically draw nodes and edges in real-time as the Extractor Agent processes each chunk.
-
-**The Proof:** Ask a multi-hop question: *"Which organization developed the architecture that GPT's decoder is based on?"* — the Router Agent selects graph traversal, the graph is traversed 2 hops, and the Synthesizer Agent returns a cited answer that traces back to the exact source chunk.
-
-**The Contrast:** Ask the same question to a standard chatbot with no graph — it either hallucinates or refuses.
-
----
-
-## API Reference
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/health` | Liveness check + graph stats |
-| `POST` | `/query` | `{question}` → answer + agent metadata |
-| `POST` | `/ingest` | Multipart file upload → graph update |
-| `GET` | `/graph-data` | Current graph as `{nodes, links}` JSON |
-| `GET` | `/graph-stream` | SSE stream of graph build events |
-
----
-
-## License
-
-MIT

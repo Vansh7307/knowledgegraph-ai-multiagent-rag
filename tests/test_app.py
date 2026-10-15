@@ -31,6 +31,17 @@ def test_query_returns_grounded_answer():
         assert body["hops"] >= 1
 
 
+def test_browser_chunks_can_sync_to_the_local_backend():
+    with TestClient(app) as client:
+        response = client.post("/api/sync", json={"chunks": [{
+            "chunk_id": "browser::sync-test", "source": "browser-demo.txt",
+            "text": "Router routes questions to the Knowledge Graph.",
+        }]})
+        assert response.status_code == 200
+        assert response.json()["status"] == "synced"
+        assert response.json()["graph_nodes"] > 0
+
+
 def test_query_rejects_empty_question():
     with TestClient(app) as client:
         response = client.post("/query", json={"question": ""})

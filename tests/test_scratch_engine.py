@@ -9,7 +9,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.llm_provider import OfflineLLM
-from src.scratch_engine import ScratchAnswerEngine, extract_entities_and_relations, sentence_split, tokenize
+from src.scratch_engine import (
+    Chunk as EngineChunk,
+    GraphRAGEngine,
+    PropertyGraph,
+    ScratchAnswerEngine,
+    TFIDF,
+    extract_entities_and_relations,
+    route_query,
+    sentence_split,
+    tokenize,
+)
 from src.text_utils import Chunk
 
 
@@ -88,3 +98,49 @@ def test_offline_llm_extracts_entities():
 
     parsed = json.loads(raw)
     assert "OpenAI" in parsed["entities"]
+
+
+def test_property_graph_keeps_reverse_adjacency_and_shortest_path():
+    graph = PropertyGraph()
+    graph.add_edge("Extractor", "Property Graph", "WRITES_TO", "a::chunk0", "Extractor writes to Property Graph.")
+    graph.add_edge("Property Graph", "PageRank", "COMPUTES", "b::chunk0", "Property Graph computes PageRank.")
+
+    nodes, edges = graph.bfs(["Extractor"], max_hops=2)
+
+    assert set(nodes) == {"Extractor", "Property Graph", "PageRank"}
+    assert len(edges) == 2
+    assert graph.incoming["Property Graph"][0].source == "Extractor"
+    assert graph.shortest_path("Extractor", "PageRank") == edges
+    assert graph.number_of_nodes() == 3
+    assert graph.number_of_edges() == 2
+
+
+def test_extractor_detects_typed_entities_and_verb_relationships():
+    result = extract_entities_and_relations(
+        "The Router routes a query to the Knowledge Graph. PageRank computes centrality."
+    )
+    typed = {entity["name"]: entity["type"] for entity in result["typed_entities"]}
+    relations = {(item["source"], item["target"], item["relation"]) for item in result["relations"]}
+
+    assert typed["Router"] == "Agent"
+    assert typed["Knowledge Graph"] == "Database"
+    assert ("Router", "Knowledge Graph", "ROUTES_TO") in relations
+
+
+def test_tfidf_cosine_and_router_confidence_are_local_and_bounded():
+    chunks = [
+        EngineChunk("a::chunk0", "a", "Self-Attention computes token relationships. Self-Attention connects PageRank."),
+        EngineChunk("b::chunk0", "b", "PageRank computes graph centrality."),
+        EngineChunk("c::chunk0", "c", "SQLite stores local metadata."),
+    ]
+    ranked = TFIDF(chunks).score("Self-Attention")
+    graph = GraphRAGEngine()
+    graph.ingest(chunks)
+    route = route_query("How does Self-Attention connect to PageRank?", graph.graph)
+
+    assert ranked[0][1].chunk_id == "a::chunk0"
+    assert 0.0 <= route["confidence"] <= 1.0
+    assert route["strategy"] == "graph"
+    result = graph.query("How does Self-Attention connect to PageRank?")
+    assert "MATCH (s)-[r:" in result["trace"][1]["detail"]
+    assert all(step["ms"] >= 0 for step in result["trace"])

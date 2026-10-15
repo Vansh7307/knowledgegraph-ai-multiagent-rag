@@ -1,203 +1,155 @@
 "use client";
-import { useEffect, useState, useCallback, useRef } from "react";
-import axios from "axios";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import IngestionPanel from "@/components/IngestionPanel";
 import GraphPanel from "@/components/GraphPanel";
 import ChatPanel from "@/components/ChatPanel";
 import { ToastContainer, toast } from "@/components/Toast";
+import { chunkText, demoChunks, extractPdfText, ScratchGraphRAG, type GraphData, type TextChunk } from "@/lib/scratchEngine";
 
-interface GraphData {
-  nodes: { id: string; label: string; degree?: number }[];
-  links: { source: string; target: string; relation: string }[];
-}
-interface HealthData {
-  status: string;
-  llm_provider: string | null;
-  graph_nodes: number | null;
-  graph_edges: number | null;
-}
-
-const EMPTY_GRAPH: GraphData = { nodes: [], links: [] };
 type MobileTab = "ingest" | "graph" | "chat";
-
-const AGENTS = [
-  { label: "Extractor",   color: "var(--teal)"   },
-  { label: "Router",      color: "var(--blue)"   },
-  { label: "Reasoning",   color: "var(--purple)" },
-  { label: "Synthesizer", color: "var(--amber)"  },
-];
+const EMPTY_GRAPH: GraphData = { nodes: [], links: [] };
 
 export default function Home() {
-  const [graphData,      setGraphData]      = useState<GraphData>(EMPTY_GRAPH);
-  const [status,         setStatus]         = useState("");
-  const [health,         setHealth]         = useState<HealthData | null>(null);
-  const [startupDone,    setStartupDone]    = useState(false);
+  const engine = useRef(new ScratchGraphRAG());
+  const backendAvailable = useRef(false);
+  const [graphData, setGraphData] = useState<GraphData>(EMPTY_GRAPH);
+  const [mobileTab, setMobileTab] = useState<MobileTab>("graph");
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [status, setStatus] = useState("All processing runs locally in this browser.");
   const [highlightNodes, setHighlightNodes] = useState<string[]>([]);
   const [highlightEdges, setHighlightEdges] = useState<{ source: string; target: string }[]>([]);
-  const [mobileTab,      setMobileTab]      = useState<MobileTab>("graph");
-  const [leftCollapsed,  setLeftCollapsed]  = useState(false);
-  const [pendingFocus,   setPendingFocus]   = useState<string | null>(null);
+  const [pendingFocus, setPendingFocus] = useState<string | null>(null);
 
-  const fetchHealth = useCallback(async () => {
-    try {
-      const { data } = await axios.get<HealthData>("/api/health", { timeout: 8000 });
-      setHealth(data);
-      if (data.status === "ok" && !startupDone) {
-        setStartupDone(true);
-        toast(`Graph ready — ${data.graph_nodes} nodes, ${data.graph_edges} edges`, "success");
-      }
-      return data.status === "ok";
-    } catch { return false; }
-  }, [startupDone]);
+  const updateGraph = useCallback((message?: string) => {
+    setGraphData(engine.current.graphData());
+    if (message) setStatus(message);
+  }, []);
 
-  const fetchGraph = useCallback(async () => {
+  const syncChunks = useCallback(async (chunks: TextChunk[]) => {
+    if (!backendAvailable.current || !chunks.length) return;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 1800);
     try {
-      const { data } = await axios.get<GraphData>("/api/graph", { timeout: 10000 });
-      if (data.nodes?.length > 0) {
-        setGraphData(data);
-        setStatus(`Graph loaded: ${data.nodes.length} nodes, ${data.links.length} edges`);
-      } else {
-        setStatus("Ready — load the enterprise demo or upload a document.");
-      }
-    } catch {
-      setStatus("Backend starting up — may take 30–60 s on first load.");
+      const response = await fetch("/api/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chunks: chunks.map((chunk) => ({ ...chunk, chunk_id: `browser/${chunk.chunk_id}` })) }),
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const result = await response.json();
+      setStatus(`Browser engine is active; Python mirror contains ${result.chunks} chunk(s).`);
+    } catch (error) {
+      const reason = error instanceof DOMException && error.name === "AbortError" ? "request timed out" : error instanceof Error ? error.message : "request failed";
+      setStatus(`Browser graph remains active; optional Python sync failed (${reason}).`);
+    } finally {
+      window.clearTimeout(timeout);
     }
   }, []);
 
   useEffect(() => {
-    fetchGraph();
-    fetchHealth();
-    const iv = setInterval(async () => {
-      const ready = await fetchHealth();
-      if (ready) { clearInterval(iv); fetchGraph(); }
-    }, 6000);
-    return () => clearInterval(iv);
-  }, [fetchGraph, fetchHealth]);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 900);
+    void fetch("/api/health", { signal: controller.signal }).then((response) => {
+      if (!response.ok) return;
+      backendAvailable.current = true;
+      const chunks = engine.current.exportChunks();
+      if (chunks.length) void syncChunks(chunks);
+      else setStatus("Local browser engine ready; Python mirror is available.");
+    }).catch(() => {
+      backendAvailable.current = false;
+    }).finally(() => window.clearTimeout(timeout));
+    return () => { window.clearTimeout(timeout); controller.abort(); };
+  }, [syncChunks]);
 
-  const handleGraphUpdate = useCallback((graph: GraphData) => {
-    setGraphData(graph);
-    setHighlightNodes([]);
-    setHighlightEdges([]);
-  }, []);
+  const ingestFile = useCallback(async (file: File) => {
+    const content = file.name.toLowerCase().endsWith(".pdf") ? await extractPdfText(file) : await file.text();
+    const chunks = chunkText(content, file.name);
+    if (!chunks.length) throw new Error("The selected document contains no readable text.");
+    engine.current.ingest(chunks);
+    updateGraph(`Locally extracted ${chunks.length} chunk(s) from ${file.name}.`);
+    void syncChunks(chunks);
+  }, [syncChunks, updateGraph]);
 
-  const handleHighlight = useCallback((nodes: string[], edges: { source: string; target: string }[]) => {
-    setHighlightNodes(nodes);
-    setHighlightEdges(edges);
+  const loadDemo = useCallback(async (progress: (count: number) => void) => {
+    const chunks = demoChunks();
+    for (const [index, chunk] of chunks.entries()) {
+      engine.current.ingest([chunk]);
+      setGraphData(engine.current.graphData());
+      progress(Math.round(((index + 1) / chunks.length) * 100));
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    }
+    setStatus(`Enterprise demo loaded locally: ${chunks.length} chunks, ${engine.current.graphData().nodes.length} entities.`);
+    void syncChunks(engine.current.exportChunks());
+  }, [syncChunks]);
+
+  const query = useCallback((question: string) => {
+    const result = engine.current.query(question);
+    setHighlightNodes(result.highlighted_nodes);
+    setHighlightEdges(result.highlighted_edges);
+    return result;
   }, []);
 
   const handleNodeFocus = useCallback((name: string) => {
     setPendingFocus(name);
     setMobileTab("graph");
   }, []);
-
+  const resetGraph = useCallback(() => {
+    engine.current.reset();
+    updateGraph("Graph cleared. Add a document or reload the demo corpus.");
+    setHighlightNodes([]);
+    setHighlightEdges([]);
+    toast("Local graph reset", "info");
+  }, [updateGraph]);
   const clearHighlight = useCallback(() => {
     setHighlightNodes([]);
     setHighlightEdges([]);
   }, []);
-
-  const isReady = health?.status === "ok";
-
-  const TAB_LABELS: { id: MobileTab; icon: string; label: string; badge?: number }[] = [
-    { id: "ingest", icon: "📄", label: "Ingest", badge: graphData.nodes.length || undefined },
-    { id: "graph",  icon: "🕸️", label: "Graph",  badge: highlightNodes.length || undefined },
-    { id: "chat",   icon: "🤖", label: "Ask AI"  },
+  const topNodes = useMemo(() => graphData.nodes
+    .slice().sort((a, b) => b.pagerank - a.pagerank || b.degree - a.degree)
+    .slice(0, 20).map((node) => node.id), [graphData.nodes]);
+  const getNodeDetail = useCallback((name: string) => engine.current.nodeDetail(name), []);
+  const mobileTabs: { id: MobileTab; icon: string; label: string }[] = [
+    { id: "ingest", icon: "📄", label: "Ingest" },
+    { id: "graph", icon: "🕸️", label: "Graph" },
+    { id: "chat", icon: "🤖", label: "Ask AI" },
   ];
 
   return (
     <div className="app-shell">
       <ToastContainer />
-
-      {/* ── top header ── */}
-      <header style={{ height: "var(--header-h)", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 16px", background: "var(--panel)", borderBottom: "1px solid var(--border)", flexShrink: 0, zIndex: 100, gap: 8 }}>
-        {/* logo */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          {/* laptop collapse toggle */}
-          <button className="collapse-toggle" onClick={() => setLeftCollapsed(c => !c)}
-            style={{ width: 26, height: 26, borderRadius: "var(--radius-sm)", background: "var(--panel2)", border: "1px solid var(--border)", color: "var(--text2)", fontSize: "0.75rem", display: "flex", alignItems: "center", justifyContent: "center" }}
-            title={leftCollapsed ? "Expand ingestion panel" : "Collapse ingestion panel"}>
-            {leftCollapsed ? "▶" : "◀"}
-          </button>
-          <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--teal)", boxShadow: "0 0 10px var(--teal)", display: "inline-block", flexShrink: 0 }} className="pulse" />
-          <span style={{ fontWeight: 700, fontSize: "0.9rem", letterSpacing: "-0.02em", whiteSpace: "nowrap" }}>KnowledgeGraph AI</span>
-          <span className="hide-mobile" style={{ width: 1, height: 14, background: "var(--border)", flexShrink: 0 }} />
-          <span className="hide-mobile" style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "0.62rem", color: "var(--muted)" }}>Multi-Agent GraphRAG</span>
+      <header className="topbar">
+        <div className="brand">
+          <button className="collapse-toggle" onClick={() => setLeftCollapsed((value) => !value)} aria-label="Toggle ingestion panel">{leftCollapsed ? "▶" : "◀"}</button>
+          <span className="brand-dot" />
+          <strong>KnowledgeGraph AI</strong>
+          <span className="brand-subtitle">Multi-Agent GraphRAG</span>
         </div>
-
-        {/* agent pipeline — hidden on small screens */}
-        <div className="hide-mobile" style={{ display: "flex", alignItems: "center", gap: 0, flexShrink: 0 }}>
-          {AGENTS.map((a, i) => (
-            <div key={a.label} style={{ display: "flex", alignItems: "center" }}>
-              <span style={{ fontSize: "0.65rem", fontWeight: 600, color: a.color, padding: "0 8px" }}>{a.label}</span>
-              {i < AGENTS.length - 1 && <span style={{ color: "var(--border2)", fontSize: "0.65rem" }}>→</span>}
-            </div>
-          ))}
-        </div>
-
-        {/* right status */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            <span style={{ width: 7, height: 7, borderRadius: "50%", background: isReady ? "var(--teal)" : "var(--amber)", boxShadow: isReady ? "0 0 8px var(--teal)" : "none", flexShrink: 0 }} className={isReady ? "" : "pulse"} />
-            <span style={{ fontSize: "0.68rem", color: isReady ? "var(--teal)" : "var(--amber)", fontFamily: "JetBrains Mono, monospace", whiteSpace: "nowrap" }}>
-              {isReady ? (health?.llm_provider || "ready") : "starting…"}
-            </span>
-          </div>
-          {health?.graph_nodes != null && (
-            <span className="badge badge-teal hide-mobile" style={{ fontSize: "0.6rem" }}>{health.graph_nodes}N · {health.graph_edges}E</span>
-          )}
-          {highlightNodes.length > 0 && (
-            <button onClick={clearHighlight} style={{ padding: "3px 9px", borderRadius: "var(--radius-sm)", background: "var(--teal-dim)", border: "1px solid rgba(0,212,170,0.3)", color: "var(--teal)", fontSize: "0.68rem", fontWeight: 500, whiteSpace: "nowrap" }}>
-              ✕ Clear
-            </button>
-          )}
-        </div>
+        <div className="agent-pipeline"><span>Extractor</span> → <span>Router</span> → <span>Synthesizer</span></div>
+        <div className="local-status"><span className="brand-dot" /> Local · {graphData.nodes.length}N / {graphData.links.length}E</div>
       </header>
-
       <div className="glow-line" />
-
-      {/* ── main grid (desktop) / stacked panels (mobile) ── */}
-      <div className={`main-grid${leftCollapsed ? " left-collapsed" : ""}`} style={{ flex: 1, minHeight: 0 }}>
-
-        {/* LEFT — ingestion */}
-        <div style={{ background: "var(--panel)", borderRight: "1px solid var(--border)", overflow: "hidden", display: "flex", flexDirection: "column", transition: "width var(--transition)" }}
-          className="panel-mobile visible">
-          <IngestionPanel onGraphUpdate={handleGraphUpdate} onStatus={setStatus} />
+      <main className={`main-grid${leftCollapsed ? " left-collapsed" : ""}`}>
+        <div className={`app-panel ingestion-panel panel-mobile ${mobileTab === "ingest" ? "visible" : "hidden"}`}>
+          <IngestionPanel nodeCount={graphData.nodes.length} edgeCount={graphData.links.length} chunkCount={engine.current.chunkCount}
+            onIngest={ingestFile} onLoadDemo={loadDemo} />
         </div>
-
-        {/* CENTER — graph */}
-        <div style={{ overflow: "hidden", display: "flex", flexDirection: "column", minWidth: 0 }}
-          className={`panel-mobile ${mobileTab === "graph" ? "visible" : "hidden"}`}>
-          <GraphPanel
-            graphData={graphData}
-            status={status}
-            queryHighlightNodes={highlightNodes}
-            queryHighlightEdges={highlightEdges}
-            pendingFocus={pendingFocus}
-            onFocusConsumed={() => setPendingFocus(null)}
-            onNodeFocus={handleNodeFocus}
-            onHighlightClear={clearHighlight}
-          />
+        <div className={`app-panel graph-panel panel-mobile ${mobileTab === "graph" ? "visible" : "hidden"}`}>
+          <GraphPanel graphData={graphData} status={status} queryHighlightNodes={highlightNodes}
+            queryHighlightEdges={highlightEdges} pendingFocus={pendingFocus}
+            onFocusConsumed={() => setPendingFocus(null)} onNodeFocus={handleNodeFocus}
+            onHighlightClear={clearHighlight} getNodeDetail={getNodeDetail} onReset={resetGraph} />
         </div>
-
-        {/* RIGHT — chat */}
-        <div style={{ background: "var(--panel)", borderLeft: "1px solid var(--border)", overflow: "hidden", display: "flex", flexDirection: "column" }}
-          className={`panel-mobile ${mobileTab === "chat" ? "visible" : "hidden"}`}>
-          <ChatPanel
-            graphNodes={graphData.nodes.map(n => n.id)}
-            onHighlight={handleHighlight}
-            onNodeFocus={handleNodeFocus}
-            onSwitchToGraph={() => setMobileTab("graph")}
-          />
+        <div className={`app-panel chat-panel panel-mobile ${mobileTab === "chat" ? "visible" : "hidden"}`}>
+          <ChatPanel graphNodes={topNodes} onQuery={query} onHighlight={(nodes, edges) => { setHighlightNodes(nodes); setHighlightEdges(edges); }}
+            onNodeFocus={handleNodeFocus} onSwitchToGraph={() => setMobileTab("graph")} />
         </div>
-      </div>
-
-      {/* ── mobile bottom nav ── */}
-      <nav className="bottom-nav">
-        {TAB_LABELS.map(t => (
-          <button key={t.id} className={`bottom-nav-tab${mobileTab === t.id ? " active" : ""}`} onClick={() => setMobileTab(t.id)}>
-            <span className="bottom-nav-tab-icon">{t.icon}</span>
-            <span>{t.label}{t.badge ? ` (${t.badge})` : ""}</span>
-          </button>
-        ))}
+      </main>
+      <nav className="bottom-nav" aria-label="Main navigation">
+        {mobileTabs.map((tab) => <button key={tab.id} className={`bottom-nav-tab${mobileTab === tab.id ? " active" : ""}`} onClick={() => setMobileTab(tab.id)}>
+          <span className="bottom-nav-tab-icon">{tab.icon}</span><span>{tab.label}</span>
+        </button>)}
       </nav>
     </div>
   );

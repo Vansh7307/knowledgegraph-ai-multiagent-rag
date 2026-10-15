@@ -1,76 +1,27 @@
-"""
-graph_orchestrator.py
-----------------------
-Wires the Retrieval Agent, Reasoning Agent, and Synthesis Agent together
-into a LangGraph state machine. The Reasoning Agent can send the flow
-back to Retrieval for another hop (bounded by `max_reasoning_hops`),
-which is what lets this system answer multi-hop questions such as
-"Which company built the model that OpenAI's GPT decoder descended from?"
-"""
+"""Small compatibility orchestrator using deterministic local agents."""
 
 from __future__ import annotations
 
-from typing import TypedDict
-
-from langgraph.graph import END, StateGraph
-
-from src.agents import ReasoningAgent, SynthesisAgent
-from src.config import settings
 from src.knowledge_graph import facts_for_entities
 from src.retriever import HybridRetriever
+from src.scratch_engine import Chunk, PropertyGraph, ScratchAnswerEngine
 
 
-class QueryState(TypedDict, total=False):
-    question: str
-    hop: int
-    chunks: list
-    graph_facts: list[str]
-    entities: list[str]
-    sufficient: bool
-    answer: str
+class LocalQueryGraph:
+    def __init__(self, retriever: HybridRetriever, graph: PropertyGraph, known_entities: list[str]):
+        self.retriever = retriever
+        self.graph = graph
+        self.known_entities = known_entities
 
-
-def build_query_graph(retriever: HybridRetriever, kg, known_entities: list[str]):
-    reasoning_agent = ReasoningAgent()
-    synthesis_agent = SynthesisAgent()
-
-    def retrieve_node(state: QueryState) -> QueryState:
+    def invoke(self, state: dict) -> dict:
         question = state["question"]
-        new_chunks = retriever.top_chunks(question, settings.top_k_chunks)
-        matched = retriever.match_entities(question, known_entities)
-        entities = list(dict.fromkeys(state.get("entities", []) + matched))
-        graph_facts = facts_for_entities(kg, entities, hops=settings.graph_hops)
+        chunks = self.retriever.top_chunks(question, 4)
+        entities = self.retriever.match_entities(question, self.known_entities)
+        facts = facts_for_entities(self.graph, entities, 2)
+        answer = ScratchAnswerEngine().answer(question, chunks, facts)
+        return {"question": question, "chunks": chunks, "entities": entities,
+                "graph_facts": facts, "hop": 2 if facts else 1, "answer": answer}
 
-        existing_ids = {c.chunk_id for c in state.get("chunks", [])}
-        merged_chunks = state.get("chunks", []) + [c for c in new_chunks if c.chunk_id not in existing_ids]
 
-        return {**state, "chunks": merged_chunks, "graph_facts": graph_facts, "entities": entities}
-
-    def reason_node(state: QueryState) -> QueryState:
-        chunk_texts = [f"[{c.chunk_id}] {c.text}" for c in state.get("chunks", [])]
-        verdict = reasoning_agent.evaluate(state["question"], chunk_texts, state.get("graph_facts", []))
-        missing = verdict.get("missing_entities", []) or []
-        entities = list(dict.fromkeys(state.get("entities", []) + missing))
-        hop = state.get("hop", 0) + 1
-        return {**state, "sufficient": bool(verdict.get("sufficient", True)), "entities": entities, "hop": hop}
-
-    def synthesize_node(state: QueryState) -> QueryState:
-        answer = synthesis_agent.answer(state["question"], state.get("chunks", []), state.get("graph_facts", []))
-        return {**state, "answer": answer}
-
-    def route_after_reasoning(state: QueryState) -> str:
-        if state.get("sufficient", True) or state.get("hop", 0) >= settings.max_reasoning_hops:
-            return "synthesize"
-        return "retrieve"
-
-    workflow = StateGraph(QueryState)
-    workflow.add_node("retrieve", retrieve_node)
-    workflow.add_node("reason", reason_node)
-    workflow.add_node("synthesize", synthesize_node)
-
-    workflow.set_entry_point("retrieve")
-    workflow.add_edge("retrieve", "reason")
-    workflow.add_conditional_edges("reason", route_after_reasoning, {"retrieve": "retrieve", "synthesize": "synthesize"})
-    workflow.add_edge("synthesize", END)
-
-    return workflow.compile()
+def build_query_graph(retriever: HybridRetriever, kg: PropertyGraph, known_entities: list[str]):
+    return LocalQueryGraph(retriever, kg, known_entities)

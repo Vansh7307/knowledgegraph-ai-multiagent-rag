@@ -1,7 +1,7 @@
 "use client";
 import { useRef, useState, useEffect, useCallback } from "react";
-import axios from "axios";
 import { toast } from "./Toast";
+import type { QueryResult } from "@/lib/scratchEngine";
 
 interface TraceStep { agent: string; status: string; detail: string; ms: number; strategy?: string; }
 interface SourceChunk { id: string; source: string; text: string; }
@@ -16,6 +16,7 @@ interface Message {
 }
 interface Props {
   graphNodes?: string[];
+  onQuery: (question: string) => QueryResult;
   onHighlight?: (nodes: string[], edges: { source: string; target: string }[]) => void;
   onNodeFocus?: (name: string) => void;
   onSwitchToGraph?: () => void;
@@ -107,23 +108,18 @@ function SourceContext({ chunks, facts }: { chunks: SourceChunk[]; facts: string
   );
 }
 
-export default function ChatPanel({ graphNodes = [], onHighlight, onNodeFocus, onSwitchToGraph }: Props) {
+export default function ChatPanel({ graphNodes = [], onQuery, onHighlight, onNodeFocus, onSwitchToGraph }: Props) {
   const [messages,     setMessages]     = useState<Message[]>([]);
   const [input,        setInput]        = useState("");
   const [loading,      setLoading]      = useState(false);
-  const [backendReady, setBackendReady] = useState<boolean | null>(null);
   const [chips,        setChips]        = useState<string[]>(STATIC_CHIPS);
   const [lastHL,       setLastHL]       = useState<{ nodes: string[]; edges: { source: string; target: string }[] } | null>(null);
   const bottomRef   = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    axios.get("/api/health", { timeout: 8000 }).then(({ data }) => setBackendReady(data.status === "ok")).catch(() => setBackendReady(false));
-  }, []);
-
-  useEffect(() => {
     if (graphNodes.length < 4) { setChips(STATIC_CHIPS); return; }
-    const picks = [...graphNodes].sort(() => 0.5 - Math.random()).slice(0, 2);
+    const picks = graphNodes.slice(0, 2);
     setChips([...STATIC_CHIPS.slice(0, 2), `What is ${picks[0]} and how does it relate to the graph?`, `Explain the relationship between ${picks[0]} and ${picks[1]}`]);
   }, [graphNodes]);
 
@@ -139,7 +135,7 @@ export default function ChatPanel({ graphNodes = [], onHighlight, onNodeFocus, o
     setMessages(prev => [...prev, { id: Math.random().toString(36).slice(2), role: "user", text: q, ts: Date.now() }]);
     setLoading(true); scrollToBottom();
     try {
-      const { data } = await axios.post("/api/query-rich", { question: q });
+      const data = onQuery(q);
       const msg: Message = {
         id: Math.random().toString(36).slice(2), role: "assistant", text: data.answer, ts: Date.now(),
         meta: { hops: data.hops, chunks: data.chunks_used, facts: data.graph_facts_used, strategy: data.strategy },
@@ -147,25 +143,18 @@ export default function ChatPanel({ graphNodes = [], onHighlight, onNodeFocus, o
         highlightedEdges: data.highlighted_edges || [], sourceChunks: data.source_chunks || [], graphFacts: data.graph_facts || [],
       };
       setMessages(prev => [...prev, msg]);
-      setBackendReady(true);
       if (data.highlighted_nodes?.length > 0) {
         const hl = { nodes: data.highlighted_nodes, edges: data.highlighted_edges || [] };
         setLastHL(hl);
         onHighlight?.(hl.nodes, hl.edges);
         toast(`${data.highlighted_nodes.length} nodes highlighted on graph`, "info");
       }
-    } catch (e: any) {
-      const status = e?.response?.status;
-      const detail = e?.response?.data?.detail;
-      let msg = "Pipeline error — try again";
-      if (status === 503) msg = "Graph still building — wait a moment";
-      else if (status === 429) msg = "Rate limit — wait a minute";
-      else if (status === 502) msg = "LLM provider error";
-      else if (detail) msg = detail;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "The local graph query failed.";
       setMessages(prev => [...prev, { id: Math.random().toString(36).slice(2), role: "assistant", text: msg, error: true, ts: Date.now() }]);
       toast(msg, "error");
     } finally { setLoading(false); scrollToBottom(); }
-  }, [loading, scrollToBottom, onHighlight]);
+  }, [loading, scrollToBottom, onHighlight, onQuery]);
 
   const clearHistory = () => { setMessages([]); onHighlight?.([], []); setLastHL(null); toast("Conversation cleared", "info"); };
 
@@ -176,23 +165,26 @@ export default function ChatPanel({ graphNodes = [], onHighlight, onNodeFocus, o
 
   const renderAnswer = (text: string, nodes: string[]) => {
     if (!nodes.length) return <span style={{ fontSize: "0.82rem", lineHeight: 1.65, whiteSpace: "pre-wrap" }}>{text}</span>;
-    const words = text.split(/(\s+)/);
+    const alternatives = nodes.slice().sort((a, b) => b.length - a.length).map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const matcher = new RegExp(`(^|[^A-Za-z0-9])(${alternatives.join("|")})(?=$|[^A-Za-z0-9])`, "gim");
+    const parts: React.ReactNode[] = [];
+    let offset = 0;
+    for (const match of text.matchAll(matcher)) {
+      const name = match[2] || match[0];
+      const start = (match.index ?? 0) + (match[1]?.length || 0);
+      if (start > offset) parts.push(<span key={`text-${offset}`}>{text.slice(offset, start)}</span>);
+      const entity = nodes.find((candidate) => candidate.toLowerCase() === name.toLowerCase()) || name;
+      parts.push(
+        <button key={`entity-${start}`} onClick={() => { onNodeFocus?.(entity); onSwitchToGraph?.(); }}
+          style={{ background: "var(--teal-dim)", color: "var(--teal)", border: "1px solid rgba(0,212,170,0.25)", borderRadius: 4, padding: "0 4px", fontSize: "0.78rem", fontWeight: 600, cursor: "pointer", margin: "0 1px" }}>
+          {name}
+        </button>,
+      );
+      offset = start + name.length;
+    }
+    if (offset < text.length) parts.push(<span key={`text-${offset}`}>{text.slice(offset)}</span>);
     return (
-      <span style={{ fontSize: "0.82rem", lineHeight: 1.65 }}>
-        {words.map((w, i) => {
-          const clean = w.replace(/[^a-zA-Z0-9\-]/g, "").toLowerCase();
-          const match = nodes.find(n => n.toLowerCase() === clean);
-          if (match) return (
-            <button key={i} onClick={() => { onNodeFocus?.(match); onSwitchToGraph?.(); }}
-              style={{ background: "var(--teal-dim)", color: "var(--teal)", border: "1px solid rgba(0,212,170,0.25)", borderRadius: 4, padding: "0 4px", fontSize: "0.78rem", fontWeight: 600, cursor: "pointer", margin: "0 1px" }}
-              onMouseEnter={e => (e.currentTarget.style.background = "rgba(0,212,170,0.2)")}
-              onMouseLeave={e => (e.currentTarget.style.background = "var(--teal-dim)")}>
-              {w}
-            </button>
-          );
-          return <span key={i}>{w}</span>;
-        })}
-      </span>
+      <span style={{ fontSize: "0.82rem", lineHeight: 1.65, whiteSpace: "pre-wrap" }}>{parts}</span>
     );
   };
 
@@ -206,12 +198,10 @@ export default function ChatPanel({ graphNodes = [], onHighlight, onNodeFocus, o
             <span className="badge badge-amber" style={{ fontSize: "0.6rem" }}>Synthesizer Agent</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            {backendReady !== null && (
-              <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.67rem", color: backendReady ? "var(--teal)" : "var(--red)" }}>
-                <span style={{ width: 6, height: 6, borderRadius: "50%", background: backendReady ? "var(--teal)" : "var(--red)", boxShadow: backendReady ? "0 0 6px var(--teal)" : "none" }} />
-                {backendReady ? "Ready" : "Offline"}
-              </span>
-            )}
+            <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.67rem", color: "var(--teal)" }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--teal)", boxShadow: "0 0 6px var(--teal)" }} />
+              Local engine
+            </span>
             {messages.length > 0 && (
               <button onClick={clearHistory} style={{ background: "none", color: "var(--muted)", fontSize: "0.7rem", padding: "2px 6px", borderRadius: "var(--radius-sm)", border: "1px solid transparent" }}
                 onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--border2)"; e.currentTarget.style.color = "var(--red)"; }}

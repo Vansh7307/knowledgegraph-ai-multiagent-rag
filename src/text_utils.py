@@ -9,14 +9,7 @@ from __future__ import annotations
 
 import glob
 import os
-from dataclasses import dataclass
-
-
-@dataclass
-class Chunk:
-    chunk_id: str
-    source: str
-    text: str
+from src.scratch_engine import Chunk, chunk_text as _scratch_chunk_text
 
 
 def _extract_pdf_text_from_bytes(data: bytes) -> str:
@@ -74,27 +67,7 @@ def chunk_text(
     if overlap_words is not None:
         chunk_overlap = overlap_words * 5
 
-    try:
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            separators=["\n\n", "\n", ". ", " ", ""],
-        )
-        splits = splitter.split_text(text)
-    except Exception:
-        # Fallback: naive word-window chunking
-        words = text.split()
-        step = max(chunk_size // 5 - chunk_overlap // 5, 1)
-        splits = [
-            " ".join(words[s:s + chunk_size // 5])
-            for s in range(0, len(words), step)
-            if words[s:s + chunk_size // 5]
-        ]
-    return [
-        Chunk(chunk_id=f"{source}::chunk{i}", source=source, text=t)
-        for i, t in enumerate(splits) if t.strip()
-    ]
+    return _scratch_chunk_text(text, source, max(1, chunk_size // 5), max(0, chunk_overlap // 5))
 
 
 def build_all_chunks(data_dir: str, size_words: int = 500, overlap_words: int = 50) -> list[Chunk]:
