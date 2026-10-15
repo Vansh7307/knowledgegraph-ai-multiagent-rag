@@ -42,6 +42,27 @@ def test_browser_chunks_can_sync_to_the_local_backend():
         assert response.json()["graph_nodes"] > 0
 
 
+def test_reset_purges_backend_graph_and_chunk_state():
+    with TestClient(app) as client:
+        response = client.post("/api/reset")
+        assert response.status_code == 200
+        assert response.json()["node_count"] == 0
+        graph = client.get("/api/graph")
+        assert graph.status_code == 200
+        assert graph.json()["nodes"] == []
+        assert graph.json()["links"] == []
+        assert graph.json()["chunk_count"] == 0
+
+
+def test_demo_ingestion_streams_progress_and_completion_events():
+    with TestClient(app) as client:
+        response = client.get("/api/ingest-demo")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        assert "event: progress" in response.text
+        assert "event: done" in response.text
+
+
 def test_query_rejects_empty_question():
     with TestClient(app) as client:
         response = client.post("/query", json={"question": ""})
@@ -60,6 +81,7 @@ def test_index_page_serves_html():
         assert response.status_code == 200
         assert "text/html" in response.headers["content-type"]
         assert "KnowledgeGraph AI" in response.text
+        assert 'data-local-api="available"' in response.text
 
 
 def test_query_rate_limit_blocks_excess_requests(monkeypatch):

@@ -49,6 +49,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (document.body.dataset.localApi !== "available") return;
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 900);
     void fetch("/api/health", { signal: controller.signal }).then((response) => {
@@ -97,10 +98,25 @@ export default function Home() {
   }, []);
   const resetGraph = useCallback(() => {
     engine.current.reset();
-    updateGraph("Graph cleared. Add a document or reload the demo corpus.");
+    updateGraph("Local graph cleared. Add a document or reload the demo corpus.");
     setHighlightNodes([]);
     setHighlightEdges([]);
     toast("Local graph reset", "info");
+    if (backendAvailable.current) {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 1800);
+      void fetch("/api/reset", { method: "POST", signal: controller.signal })
+        .then((response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          setStatus("Local graph and Python mirror cleared.");
+        })
+        .catch((error: unknown) => {
+          const reason = error instanceof DOMException && error.name === "AbortError"
+            ? "request timed out" : error instanceof Error ? error.message : "request failed";
+          setStatus(`Local graph cleared; Python mirror reset failed (${reason}).`);
+        })
+        .finally(() => window.clearTimeout(timeout));
+    }
   }, [updateGraph]);
   const clearHighlight = useCallback(() => {
     setHighlightNodes([]);

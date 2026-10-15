@@ -121,7 +121,7 @@ a { color: var(--teal); text-decoration: none; }
 .topbar {
   height: var(--header-h); display: flex; align-items: center; justify-content: space-between;
   gap: 12px; padding: 0 14px; background: var(--panel); border-bottom: 1px solid var(--border);
-  flex-shrink: 0; z-index: 100;
+  flex-shrink: 0; z-index: 100; position: sticky; top: 0;
 }
 .brand { display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; }
 .brand strong { font-size: 0.9rem; }
@@ -147,7 +147,6 @@ a { color: var(--teal); text-decoration: none; }
   .panel-mobile {
     position: absolute;
     inset: 0;
-    bottom: var(--bottomnav-h);
     overflow-y: auto;
     transition: opacity 0.22s ease, transform 0.22s ease;
   }
@@ -166,9 +165,10 @@ a { color: var(--teal); text-decoration: none; }
 /* ── bottom nav (mobile only) ── */
 .bottom-nav {
   display: none;
-  position: fixed;
-  bottom: 0; left: 0; right: 0;
-  height: var(--bottomnav-h);
+  position: relative;
+  flex: 0 0 auto;
+  height: calc(var(--bottomnav-h) + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
   background: var(--panel);
   border-top: 1px solid var(--border);
   z-index: 200;

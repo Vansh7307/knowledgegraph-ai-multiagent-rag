@@ -60,14 +60,15 @@ const DOMAIN: [string, EntityType][] = [
   ["IDF", "Metric"], ["TF", "Metric"], ["API", "Component"], ["PDF", "Component"],
 ];
 const PREDICATES: [RegExp, string][] = [
-  [/\b(?:uses?|utilizes?)\b/i, "USES"], [/\borchestrates?\b/i, "ORCHESTRATES"],
-  [/\b(?:writes?|stores?|persists?)\b/i, "WRITES_TO"], [/\b(?:computes?|calculates?|ranks?)\b/i, "COMPUTES"],
-  [/\broutes?(?:\s+to)?\b/i, "ROUTES_TO"], [/\bpowers?\b/i, "POWERS"],
-  [/\bprevents?\b/i, "PREVENTS"], [/\b(?:built on|based on|powered by)\b/i, "BUILT_ON"],
-  [/\b(?:connects?|links?)\b/i, "CONNECTS_TO"], [/\bretrieves?\b/i, "RETRIEVES"],
-  [/\bextracts?\b/i, "EXTRACTS"], [/\bcontains?\b/i, "CONTAINS"],
-  [/\bcombines?\b/i, "COMBINES"], [/\bcreates?\b/i, "CREATES"],
-  [/\bgenerates?\b/i, "GENERATES"], [/\benables?\b/i, "ENABLES"],
+  [/\b(?:built\s+on|based\s+on|powered\s+by)\b/i, "BUILT_ON"],
+  [/\b(?:uses?|used|using|utilizes?|utilized|utilizing)\b/i, "USES"], [/\borchestrates?\b/i, "ORCHESTRATES"],
+  [/\b(?:writes?|written|stores?|stored|persists?|persisted)\b/i, "WRITES_TO"], [/\b(?:computes?|computed|calculates?|calculated|ranks?|ranked)\b/i, "COMPUTES"],
+  [/\b(?:routes?|routed)(?:\s+to)?\b/i, "ROUTES_TO"], [/\b(?:powers?|powered)\b/i, "POWERS"],
+  [/\b(?:prevents?|prevented)\b/i, "PREVENTS"], [/\b(?:connects?|connected|links?|linked)\b/i, "CONNECTS_TO"],
+  [/\b(?:retrieves?|retrieved)\b/i, "RETRIEVES"], [/\b(?:extracts?|extracted)\b/i, "EXTRACTS"],
+  [/\b(?:contains?|contained)\b/i, "CONTAINS"], [/\b(?:combines?|combined)\b/i, "COMBINES"],
+  [/\b(?:creates?|created)\b/i, "CREATES"], [/\b(?:generates?|generated)\b/i, "GENERATES"],
+  [/\b(?:enables?|enabled)\b/i, "ENABLES"], [/\b(?:supports?|supported)\b/i, "SUPPORTS"],
 ];
 
 export function tokenize(text: string): string[] {
@@ -180,11 +181,10 @@ export class ScratchGraphRAG {
       });
       names.forEach((type, name) => this.addNode(name, type, chunk.chunk_id));
       splitSentences(chunk.text).forEach((sentence) => {
-        const present = [...names.keys()].filter((name) => new RegExp(`(^|[^\\w])${escapeRegExp(name)}([^\\w]|$)`, "i").test(sentence))
-          .sort((a, b) => sentence.toLowerCase().indexOf(a.toLowerCase()) - sentence.toLowerCase().indexOf(b.toLowerCase()));
-        if (present.length < 2) return;
-        const predicate = PREDICATES.find(([pattern]) => pattern.test(sentence))?.[1] || "CONNECTS_TO";
-        this.addEdge(present[0], present[1], predicate, chunk.chunk_id, sentence);
+        sentence.split(/,\s*(?:and\s+)?/i).forEach((clause) => {
+          const relation = extractRelation(clause, [...names.keys()]);
+          if (relation) this.addEdge(relation.source, relation.target, relation.predicate, chunk.chunk_id, sentence);
+        });
       });
     });
     return this.graphData();
@@ -220,10 +220,10 @@ export class ScratchGraphRAG {
     while (queue.length) {
       const current = queue.shift();
       if (!current || current.depth >= maxHops) continue;
-      const adjacent = [...(this.outgoing.get(current.node) || []), ...(this.incoming.get(current.node) || [])];
+      const adjacent = this.outgoing.get(current.node) || [];
       adjacent.forEach((edge) => {
         edges.add(edge);
-        const other = edge.source === current.node ? edge.target : edge.source;
+        const other = edge.target;
         if (!reached.has(other)) { reached.add(other); queue.push({ node: other, depth: current.depth + 1 }); }
       });
     }
@@ -238,8 +238,8 @@ export class ScratchGraphRAG {
     while (queue.length) {
       const node = queue.shift() as string;
       if (node === target) break;
-      [...(this.outgoing.get(node) || []), ...(this.incoming.get(node) || [])].forEach((edge) => {
-        const other = edge.source === node ? edge.target : edge.source;
+      (this.outgoing.get(node) || []).forEach((edge) => {
+        const other = edge.target;
         if (!visited.has(other)) { visited.add(other); parent.set(other, { node, edge }); queue.push(other); }
       });
     }
@@ -298,7 +298,8 @@ export class ScratchGraphRAG {
     const routerStart = performance.now();
     const terms = tokenize(question);
     const matched = [...this.entities.keys()].filter((name) => new RegExp(`(^|[^\\w])${escapeRegExp(name)}([^\\w]|$)`, "i").test(question));
-    const relational = (question.match(/\b(connect|connection|relationship|relate|between|path|link|route)\b/gi) || []).length;
+    matched.sort((a, b) => question.toLowerCase().indexOf(a.toLowerCase()) - question.toLowerCase().indexOf(b.toLowerCase()));
+    const relational = (question.match(/\b(connect(?:s|ed|ing|ion)?|relationship|relate(?:s|d|ion)?|between|path|link(?:s|ed|ing)?|route(?:s|d|ing)?)\b/gi) || []).length;
     const interrogative = Number(/^\s*(how|why|which|what|who|where|when)\b/i.test(question));
     const density = Math.min(1, matched.length / Math.max(1, terms.length));
     const strategy: QueryResult["strategy"] = relational && matched.length >= 2 ? "graph" : interrogative && terms.length <= 8 && !relational ? "text" : "hybrid";
@@ -310,31 +311,33 @@ export class ScratchGraphRAG {
     const df = new Map<string, number>();
     this.chunkList.forEach((chunk) => new Set(tokenize(chunk.text)).forEach((term) => df.set(term, (df.get(term) || 0) + 1)));
     const nDocs = this.chunkList.length;
+    const idf = (term: string) => nDocs ? Math.log((1 + nDocs) / (1 + (df.get(term) || 0))) + 1 : 0;
     const queryVector = new Map<string, number>();
-    queryCounts.forEach((count, term) => queryVector.set(term, count / Math.max(1, terms.length) * Math.log(nDocs / (1 + (df.get(term) || 0)))));
+    queryCounts.forEach((count, term) => queryVector.set(term, count / Math.max(1, terms.length) * idf(term)));
     const queryNorm = Math.sqrt([...queryVector.values()].reduce((sum, value) => sum + value * value, 0));
-    const ranked = this.chunkList.map((chunk) => {
+    const rankedAll = this.chunkList.map((chunk) => {
       const words = tokenize(chunk.text);
       const counts = countTerms(words);
       const norm = Math.sqrt([...queryVector.keys()].reduce((sum, term) => {
         const tf = (counts.get(term) || 0) / Math.max(1, words.length);
-        const idf = Math.log(nDocs / (1 + (df.get(term) || 0)));
-        return sum + (tf * idf) ** 2;
+        const weight = idf(term);
+        return sum + (tf * weight) ** 2;
       }, 0));
       const dot = [...queryVector].reduce((sum, [term, value]) => {
         const tf = (counts.get(term) || 0) / Math.max(1, words.length);
-        return sum + value * tf * Math.log(nDocs / (1 + (df.get(term) || 0)));
+        return sum + value * tf * idf(term);
       }, 0);
       return { chunk, score: queryNorm && norm ? dot / (queryNorm * norm) : 0 };
     }).filter((item) => item.score > 0).sort((a, b) => b.score - a.score).slice(0, 4);
-    const traversal = this.bfs(matched, 2);
-    const path = matched.length >= 2 ? this.shortestPath(matched[0], matched[1]) : [];
+    const ranked = strategy === "graph" ? [] : rankedAll;
+    const traversal = strategy === "text" ? { nodes: [], edges: [] as Edge[] } : this.bfs(matched, 2);
+    const path = strategy !== "text" && matched.length >= 2 ? this.shortestPath(matched[0], matched[1]) : [];
     const selectedEdges = [...new Set([...traversal.edges, ...path])];
     const retrievalMs = Math.max(0, performance.now() - retrievalStart);
-    const facts = selectedEdges.map((edge) => `${edge.source} -> ${edge.relation} -> ${edge.target}`);
+    const facts = selectedEdges.map((edge) => `${edge.source} -> ${edge.relation} -> ${edge.target} [${edge.chunk_id}]`);
     const sourceChunks = ranked.map(({ chunk, score }) => ({ id: chunk.chunk_id, source: chunk.source, text: chunk.text, score: Number(score.toFixed(4)) }));
     const lines: string[] = [];
-    if (facts.length) lines.push(`Verified graph relationships: ${facts.slice(0, 6).join("; ")}.`);
+    if (facts.length) lines.push(`Heuristically extracted graph relationships: ${facts.slice(0, 6).join("; ")}.`);
     if (path.length && matched.length) {
       let current = matched[0];
       let chain = current;
@@ -344,6 +347,9 @@ export class ScratchGraphRAG {
       });
       lines.push(`Shortest path: ${chain}.`);
     }
+    if (strategy !== "text" && matched.length >= 2 && !path.length) {
+      lines.push(`No directed path was found from ${matched[0]} to ${matched[1]} in the extracted graph.`);
+    }
     const evidence = ranked.flatMap(({ chunk }) => splitSentences(chunk.text)
       .map((sentence) => ({ sentence, id: chunk.chunk_id, hits: tokenize(sentence).filter((term) => queryCounts.has(term)).length }))
       .filter((item) => item.hits > 0)).sort((a, b) => b.hits - a.hits).slice(0, 3);
@@ -352,13 +358,13 @@ export class ScratchGraphRAG {
     const totalMs = Math.max(0, performance.now() - started);
     const cypher = selectedEdges.map((edge) => `MATCH (s)-[r:${edge.relation}]->(o) WHERE s.name = '${edge.source.replace(/'/g, "''")}' AND o.name = '${edge.target.replace(/'/g, "''")}'`).join("\n");
     return {
-      answer: lines.join(" "), hops: selectedEdges.length ? 2 : 1,
+      answer: lines.join(" "), hops: path.length || (selectedEdges.length || ranked.length ? 1 : 0),
       chunks_used: ranked.length, graph_facts_used: facts.length, strategy,
       confidence: Number(confidence.toFixed(2)),
       trace: [
         { agent: "Router", status: "done", detail: `Selected ${strategy}; confidence ${confidence.toFixed(2)}; relational=${relational}, interrogative=${interrogative}, entityDensity=${density.toFixed(3)}.`, ms: Number(routerMs.toFixed(2)), strategy, confidence: Number(confidence.toFixed(2)) },
         { agent: "Extractor / Retriever", status: "done", detail: `TF-IDF cosine scores ${ranked.map((item) => item.score.toFixed(4)).join(", ") || "(no matches)"}; BFS visited ${traversal.nodes.length} nodes. Cypher: ${cypher || "(no traversal)"}`, ms: Number(retrievalMs.toFixed(2)) },
-        { agent: "Synthesizer", status: "done", detail: `Grounded answer from ${ranked.length} chunks and ${facts.length} graph triplets.`, ms: Number(Math.max(0, totalMs - routerMs - retrievalMs).toFixed(2)) },
+        { agent: "Synthesizer", status: "done", detail: `Extractive answer from ${ranked.length} chunks and ${facts.length} heuristic graph triplets.`, ms: Number(Math.max(0, totalMs - routerMs - retrievalMs).toFixed(2)) },
       ],
       highlighted_nodes: traversal.nodes, highlighted_edges: selectedEdges.map(({ source, target, relation }) => ({ source, target, relation })),
       source_chunks: sourceChunks, graph_facts: facts, features: { relational_terms: relational, interrogative, entity_density: Number(density.toFixed(3)), matched_entities: matched },
@@ -370,6 +376,35 @@ function countTerms(tokens: string[]): Map<string, number> {
   const result = new Map<string, number>();
   tokens.forEach((token) => result.set(token, (result.get(token) || 0) + 1));
   return result;
+}
+
+function extractRelation(sentence: string, names: string[]): { source: string; target: string; predicate: string } | null {
+  const match = PREDICATES.map(([pattern, predicate]) => {
+    const found = pattern.exec(sentence);
+    return found ? { found, predicate } : null;
+  }).find((candidate) => candidate !== null);
+  if (!match || /\b(?:not|never|no)\b/i.test(sentence.slice(Math.max(0, match.found.index - 24), match.found.index))) return null;
+  const occurrences = names.flatMap((name) => {
+    const index = sentence.toLowerCase().indexOf(name.toLowerCase());
+    return index < 0 ? [] : [{ start: index, end: index + name.length, name }];
+  });
+  const passive = /\b(?:is|are|was|were|been|being)\s+(?:used|utilized|orchestrated|written|stored|persisted|computed|calculated|ranked|routed|powered|prevented|connected|linked|retrieved|extracted|contained|combined|created|generated|enabled|supported)\s+by\b/i.exec(sentence);
+  if (passive) {
+    const patients = occurrences.filter((entry) => entry.end <= passive.index);
+    const actors = occurrences.filter((entry) => entry.start >= passive.index + passive[0].length);
+    if (!patients.length || !actors.length) return null;
+    return {
+      source: actors.reduce((left, right) => left.start < right.start ? left : right).name,
+      target: patients.reduce((left, right) => left.start > right.start ? left : right).name,
+      predicate: match.predicate,
+    };
+  }
+  const before = occurrences.filter((entry) => entry.end <= match.found.index);
+  const after = occurrences.filter((entry) => entry.start >= match.found.index + match.found[0].length);
+  if (!before.length || !after.length) return null;
+  const source = before.reduce((left, right) => left.start > right.start ? left : right).name;
+  const target = after.reduce((left, right) => left.start < right.start ? left : right).name;
+  return source === target ? null : { source, target, predicate: match.predicate };
 }
 
 function escapeRegExp(value: string): string {

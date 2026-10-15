@@ -43,6 +43,7 @@ export default function GraphPanel({
   const dimensionsRef = useRef({ width: 0, height: 0 });
   const viewRef = useRef({ x: 0, y: 0, scale: 1 });
   const pointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const initializedTypesRef = useRef(false);
   const dragRef = useRef<{ mode: "node" | "pan" | "pinch"; node?: SimNode; x: number; y: number; initialDistance?: number; initialScale?: number } | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [selected, setSelected] = useState<NodeDetail | null>(null);
@@ -55,6 +56,7 @@ export default function GraphPanel({
   const nodeTypes = useMemo(() => [...new Set(graphData.nodes.map((node) => node.type))], [graphData.nodes]);
 
   useEffect(() => {
+    const hadNodes = nodesRef.current.length > 0;
     const previous = new Map(nodesRef.current.map((node) => [node.id, node]));
     nodesRef.current = graphData.nodes.map((node, index) => {
       const old = previous.get(node.id);
@@ -62,8 +64,14 @@ export default function GraphPanel({
       const radius = 18 * Math.sqrt(index + 1);
       return { ...node, x: old?.x ?? Math.cos(angle) * radius, y: old?.y ?? Math.sin(angle) * radius, vx: old?.vx ?? 0, vy: old?.vy ?? 0 };
     });
-    if (visibleTypes.size === 0 && nodeTypes.length) setVisibleTypes(new Set(nodeTypes));
-  }, [graphData.nodes, nodeTypes, visibleTypes.size]);
+    if (!graphData.nodes.length) {
+      initializedTypesRef.current = false;
+      setVisibleTypes(new Set());
+    } else if (!hadNodes || !initializedTypesRef.current) {
+      initializedTypesRef.current = true;
+      setVisibleTypes(new Set(nodeTypes));
+    }
+  }, [graphData.nodes, nodeTypes]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -91,14 +99,14 @@ export default function GraphPanel({
     setZoomLabel(Math.round(scale * 100));
   }, []);
 
-  useEffect(() => { if (nodesRef.current.length) fitToView(); }, [graphData.nodes.length, fitToView]);
+  useEffect(() => { if (nodesRef.current.length && size.width && size.height) fitToView(); }, [graphData.nodes.length, fitToView, size.width, size.height]);
 
   useEffect(() => {
     if (!pendingFocus) return;
     const node = nodesRef.current.find((entry) => entry.id === pendingFocus);
     if (node) {
       const { width, height } = dimensionsRef.current;
-      viewRef.current = { x: -node.x + width / 2 / viewRef.current.scale, y: -node.y + height / 2 / viewRef.current.scale, scale: Math.max(2.3, viewRef.current.scale) };
+      viewRef.current = { x: -node.x, y: -node.y, scale: Math.max(2.3, viewRef.current.scale) };
       setZoomLabel(Math.round(viewRef.current.scale * 100));
     }
     onFocusConsumed?.();
@@ -111,6 +119,7 @@ export default function GraphPanel({
     if (!context) return;
     let frame = 0;
     let running = true;
+    let settleFrames = 120;
     const render = (time: number) => {
       if (!running) return;
       const dpr = window.devicePixelRatio || 1;
@@ -126,34 +135,49 @@ export default function GraphPanel({
       const nodes = nodesRef.current;
       const byName = new Map(nodes.map((node) => [node.id, node]));
 
-      // Coulomb repulsion, Hooke springs, gravity, and damped integration.
-      for (let i = 0; i < nodes.length; i += 1) {
-        const a = nodes[i];
-        for (let j = i + 1; j < nodes.length; j += 1) {
-          const b = nodes[j];
-          let dx = a.x - b.x, dy = a.y - b.y;
-          const distanceSq = Math.max(25, dx * dx + dy * dy);
-          const force = Math.min(1.8, 900 / distanceSq);
-          const distance = Math.sqrt(distanceSq);
-          dx /= distance; dy /= distance;
-          a.vx += dx * force; a.vy += dy * force;
-          b.vx -= dx * force; b.vy -= dy * force;
-        }
-        a.vx -= a.x * 0.002; a.vy -= a.y * 0.002;
+      if (settleFrames > 0 || nodes.some((node) => Math.abs(node.vx) + Math.abs(node.vy) > 0.08)) {
+        const cellSize = 120;
+        const grid = new Map<string, SimNode[]>();
+        const cellKey = (x: number, y: number) => `${Math.floor(x / cellSize)},${Math.floor(y / cellSize)}`;
+        nodes.forEach((node) => {
+          const key = cellKey(node.x, node.y);
+          const bucket = grid.get(key) || [];
+          bucket.push(node);
+          grid.set(key, bucket);
+        });
+        // Cell-local repulsion bounds the work per node while preserving local Coulomb behavior.
+        nodes.forEach((a) => {
+          const cellX = Math.floor(a.x / cellSize), cellY = Math.floor(a.y / cellSize);
+          const nearby: SimNode[] = [];
+          for (let gx = cellX - 1; gx <= cellX + 1; gx += 1) {
+            for (let gy = cellY - 1; gy <= cellY + 1; gy += 1) nearby.push(...(grid.get(`${gx},${gy}`) || []));
+          }
+          nearby.slice(0, 64).forEach((b) => {
+            if (a === b) return;
+            let dx = a.x - b.x, dy = a.y - b.y;
+            const distanceSq = Math.max(25, dx * dx + dy * dy);
+            const force = Math.min(1.8, 900 / distanceSq);
+            const distance = Math.sqrt(distanceSq);
+            dx /= distance; dy /= distance;
+            a.vx += dx * force; a.vy += dy * force;
+          });
+          a.vx -= a.x * 0.002; a.vy -= a.y * 0.002;
+        });
+        graphData.links.forEach((edge) => {
+          const a = byName.get(edge.source), b = byName.get(edge.target);
+          if (!a || !b) return;
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const distance = Math.max(1, Math.hypot(dx, dy));
+          const force = (distance - 100) * 0.0008;
+          a.vx += dx / distance * force; a.vy += dy / distance * force;
+          b.vx -= dx / distance * force; b.vy -= dy / distance * force;
+        });
+        nodes.forEach((node) => {
+          node.vx *= 0.86; node.vy *= 0.86;
+          node.x += node.vx; node.y += node.vy;
+        });
+        settleFrames = Math.max(0, settleFrames - 1);
       }
-      graphData.links.forEach((edge) => {
-        const a = byName.get(edge.source), b = byName.get(edge.target);
-        if (!a || !b) return;
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const distance = Math.max(1, Math.hypot(dx, dy));
-        const force = (distance - 100) * 0.0008;
-        a.vx += dx / distance * force; a.vy += dy / distance * force;
-        b.vx -= dx / distance * force; b.vy -= dy / distance * force;
-      });
-      nodes.forEach((node) => {
-        node.vx *= 0.86; node.vy *= 0.86;
-        node.x += node.vx; node.y += node.vy;
-      });
 
       const { x: panX, y: panY, scale } = viewRef.current;
       context.save();
@@ -221,7 +245,15 @@ export default function GraphPanel({
     if (drag.mode === "pinch" && pointersRef.current.size > 1) {
       const [first, second] = [...pointersRef.current.values()];
       const distance = Math.hypot(first.x - second.x, first.y - second.y);
-      viewRef.current.scale = Math.min(5, Math.max(0.2, (drag.initialScale || 1) * distance / Math.max(1, drag.initialDistance || 1)));
+      const rect = canvasRef.current?.getBoundingClientRect();
+      const center = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+      const world = worldPoint(center.x, center.y);
+      const scale = Math.min(5, Math.max(0.2, (drag.initialScale || 1) * distance / Math.max(1, drag.initialDistance || 1)));
+      if (rect) {
+        viewRef.current.x = (center.x - rect.left - rect.width / 2) / scale - world.x;
+        viewRef.current.y = (center.y - rect.top - rect.height / 2) / scale - world.y;
+      }
+      viewRef.current.scale = scale;
     } else if (drag.mode === "node" && drag.node) {
       const point = worldPoint(event.clientX, event.clientY);
       drag.node.x = point.x; drag.node.y = point.y; drag.node.vx = 0; drag.node.vy = 0;
@@ -241,7 +273,12 @@ export default function GraphPanel({
       onNodeFocus?.(drag.node.id);
     }
     pointersRef.current.delete(event.pointerId);
-    dragRef.current = pointersRef.current.size ? dragRef.current : null;
+    if (pointersRef.current.size === 1) {
+      const remaining = [...pointersRef.current.values()][0];
+      dragRef.current = { mode: "pan", x: remaining.x, y: remaining.y };
+    } else if (!pointersRef.current.size) {
+      dragRef.current = null;
+    }
   };
   const zoom = (factor: number) => {
     viewRef.current.scale = Math.max(0.2, Math.min(5, viewRef.current.scale * factor));
@@ -267,7 +304,7 @@ export default function GraphPanel({
             const node = nodesRef.current.find((entry) => entry.id === event.target.value);
             if (node) {
               const scale = Math.max(2, viewRef.current.scale);
-              viewRef.current = { x: -node.x + size.width / 2 / scale, y: -node.y + size.height / 2 / scale, scale };
+              viewRef.current = { x: -node.x, y: -node.y, scale };
               setZoomLabel(Math.round(scale * 100));
               setSelected(getNodeDetail(node.id)); setShowInspector(true);
             }

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -135,7 +135,7 @@ async def _read_upload(file: UploadFile) -> str:
     filename = file.filename or "upload.txt"
     if Path(filename).suffix.lower() not in {".txt", ".pdf"}:
         raise HTTPException(status_code=400, detail="Only .txt and .pdf files are supported.")
-    contents = await file.read()
+    contents = await file.read(10 * 1024 * 1024 + 1)
     if len(contents) > 10 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="File too large. Maximum upload size is 10 MB.")
     if Path(filename).suffix.lower() == ".pdf":
@@ -168,9 +168,7 @@ async def upload(file: UploadFile = File(...)):
 @app.post("/api/reset")
 def reset():
     engine = _engine()
-    engine.graph = type(engine.graph)()
-    engine.chunks.clear()
-    engine._chunk_ids.clear()
+    engine.reset()
     return {"status": "reset", "node_count": 0, "edge_count": 0}
 
 
@@ -262,10 +260,45 @@ def export_graph(fmt: str = "json"):
 
 @app.get("/api/ingest-demo")
 async def ingest_demo():
-    """Compatibility endpoint; browser ingestion uses its bundled local corpus."""
+    """Stream local demo ingestion progress as server-sent events."""
     engine = _engine()
-    return {"event": "done", "graph": _graph(), "total_chunks": len(engine.chunks),
-            "total_nodes": len(engine.graph.nodes), "total_edges": len(engine.graph.edges)}
+    demo_chunks = []
+    if DATA_DIR.exists():
+        for path in sorted(DATA_DIR.iterdir()):
+            if path.suffix.lower() == ".txt":
+                text = path.read_text(encoding="utf-8")
+                demo_chunks.extend(chunk_text(
+                    text, path.name, settings.chunk_size_words, settings.chunk_overlap_words))
+
+    async def events():
+        total = len(demo_chunks)
+        if not total:
+            yield f"event: error\ndata: {json.dumps({'message': 'No local demo text files were found.'})}\n\n"
+            return
+        for index, chunk in enumerate(demo_chunks, start=1):
+            engine.ingest([chunk])
+            payload = {
+                "completed": index,
+                "total": total,
+                "progress": round(index / total * 100),
+                "chunk_id": chunk.chunk_id,
+                "node_count": len(engine.graph.nodes),
+                "edge_count": len(engine.graph.edges),
+            }
+            yield f"event: progress\ndata: {json.dumps(payload)}\n\n"
+        result = {
+            "total_chunks": len(engine.chunks),
+            "total_nodes": len(engine.graph.nodes),
+            "total_edges": len(engine.graph.edges),
+            "graph": engine.graph_payload(),
+        }
+        yield f"event: done\ndata: {json.dumps(result)}\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 FRONTEND_OUT = Path(__file__).parent.parent / "frontend" / "out"
@@ -285,5 +318,10 @@ def favicon():
 def index():
     index_file = FRONTEND_OUT / "index.html"
     if index_file.exists():
-        return HTMLResponse(index_file.read_text(encoding="utf-8"))
-    return HTMLResponse("<html><body><h2>KnowledgeGraph AI local engine is ready.</h2></body></html>")
+        html = index_file.read_text(encoding="utf-8")
+        head, body, tail = html.partition("<body")
+        if body:
+            html = f'{head}<body data-local-api="available"{tail}'
+        return HTMLResponse(html)
+    return HTMLResponse(
+        '<html><body data-local-api="available"><h2>KnowledgeGraph AI local engine is ready.</h2></body></html>')

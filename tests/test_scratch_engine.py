@@ -115,6 +115,15 @@ def test_property_graph_keeps_reverse_adjacency_and_shortest_path():
     assert graph.number_of_edges() == 2
 
 
+def test_directed_traversal_never_follows_an_incoming_edge_backwards():
+    graph = PropertyGraph()
+    graph.add_edge("Source", "Target", "USES", "a::chunk0", "Source uses Target.")
+
+    assert graph.bfs(["Target"], max_hops=2) == (["Target"], [])
+    assert graph.shortest_path("Target", "Source") == []
+    assert graph.shortest_path("Source", "Target")[0].source == "Source"
+
+
 def test_extractor_detects_typed_entities_and_verb_relationships():
     result = extract_entities_and_relations(
         "The Router routes a query to the Knowledge Graph. PageRank computes centrality."
@@ -141,6 +150,62 @@ def test_tfidf_cosine_and_router_confidence_are_local_and_bounded():
     assert ranked[0][1].chunk_id == "a::chunk0"
     assert 0.0 <= route["confidence"] <= 1.0
     assert route["strategy"] == "graph"
+    assert route_query("How are Self-Attention and PageRank connected?", graph.graph)["strategy"] == "graph"
     result = graph.query("How does Self-Attention connect to PageRank?")
     assert "MATCH (s)-[r:" in result["trace"][1]["detail"]
     assert all(step["ms"] >= 0 for step in result["trace"])
+
+
+def test_smoothed_tfidf_scores_rare_and_common_terms_without_zero_or_negative_idf():
+    chunks = [
+        EngineChunk("a", "a", "common rare"),
+        EngineChunk("b", "b", "common other"),
+    ]
+
+    rare = TFIDF(chunks).score("rare")
+    common = TFIDF(chunks).score("common")
+    one_document = TFIDF(chunks[:1]).score("common")
+
+    assert rare[0][0] > 0 and rare[0][1].chunk_id == "a"
+    assert common[0][0] > 0
+    assert one_document[0][0] == 1
+
+
+def test_extractor_abstains_without_predicate_and_for_negated_relationships():
+    no_predicate = extract_entities_and_relations("The Router and Knowledge Graph are available.")
+    negated = extract_entities_and_relations("The Router does not use the Knowledge Graph.")
+
+    assert no_predicate["relations"] == []
+    assert negated["relations"] == []
+
+
+def test_extractor_resolves_active_and_passive_predicate_direction():
+    active = extract_entities_and_relations("The Router uses the Knowledge Graph.")
+    passive = extract_entities_and_relations("The Knowledge Graph is used by the Router.")
+
+    assert [(item["source"], item["target"], item["relation"]) for item in active["relations"]] == [
+        ("Router", "Knowledge Graph", "USES")]
+    assert [(item["source"], item["target"], item["relation"]) for item in passive["relations"]] == [
+        ("Router", "Knowledge Graph", "USES")]
+
+
+def test_extractor_does_not_join_entities_across_coordinated_clauses():
+    result = extract_entities_and_relations(
+        "The Extractor extracts entities, the Router routes queries, and the Synthesizer combines evidence."
+    )
+
+    assert result["relations"] == []
+
+
+def test_graph_answer_reports_absence_of_a_directed_connection():
+    engine = GraphRAGEngine()
+    engine.ingest([
+        EngineChunk("a", "a", "The Router routes queries to Vector Search."),
+        EngineChunk("b", "b", "The Knowledge Graph contains data."),
+    ])
+
+    result = engine.query("How are Router and Knowledge Graph connected?")
+
+    assert result["strategy"] == "graph"
+    assert result["hops"] == 1
+    assert "No directed path was found from Router to Knowledge Graph" in result["answer"]

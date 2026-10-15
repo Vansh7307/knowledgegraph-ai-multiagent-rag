@@ -23,16 +23,16 @@ cd ..
 uvicorn src.app:app --reload --port 8000
 ```
 
-The service reads local `.txt` files from `data/sample_docs` at startup and provides `/api/health`, `/api/graph`, `/api/query-rich`, `/api/upload`, `/api/sync`, `/api/node-detail`, and `/api/export`. Its graph is held in memory. When the page is served by FastAPI, it detects the same-origin service and asynchronously mirrors ingested chunks; browser answers remain local and do not wait for the sync. PDF upload uses the locally installed PyMuPDF package; the standalone browser uses its built-in text extraction routine.
+The service reads local `.txt` files from `data/sample_docs` at startup and provides `/api/health`, `/api/graph`, `/api/query-rich`, `/api/reset`, `/api/ingest-demo`, `/api/upload`, `/api/sync`, `/api/node-detail`, and `/api/export`. `/api/ingest-demo` streams progress as server-sent events. Its graph is held in memory. When the page is served by FastAPI, it detects the same-origin service and asynchronously mirrors ingested chunks; browser answers remain local and do not wait for the sync. PDF upload uses the locally installed PyMuPDF package; the standalone browser uses its built-in text extraction routine.
 
 ## From-scratch engine
 
 - `src/scratch_engine.py` implements sentence splitting and overlapping word-window chunking; technical phrase, acronym, and capitalization-based entity extraction; verb-pattern relationship extraction; adjacency and reverse-adjacency lists; keyword postings; BFS neighborhoods and shortest paths; iterative PageRank; feature-scored query routing; TF-IDF vectors; cosine similarity; generated Cypher; and cited deterministic synthesis.
 - `frontend/src/lib/scratchEngine.ts` mirrors those primitives for browser-only execution.
-- `frontend/src/components/GraphPanel.tsx` implements its own canvas rendering and force simulation (pairwise Coulomb repulsion, Hooke springs, centering force, velocity damping), pointer/touch navigation, node inspection, filters, search, and export.
+- `frontend/src/components/GraphPanel.tsx` implements its own canvas rendering and force simulation (cell-local Coulomb repulsion, Hooke springs, centering force, velocity damping), pointer/touch navigation, node inspection, filters, search, and export.
 - `src/agents.py`, `src/retriever.py`, and `src/knowledge_graph.py` retain small compatibility interfaces backed by the local algorithms.
 
-The TF-IDF implementation uses term frequency and `IDF = log(N / (1 + df))`; cosine similarity is the normalized vector dot product. All answers are based on retrieved source chunks and extracted relationships. When neither contains relevant evidence, the engine says so instead of inventing an answer.
+The TF-IDF implementation uses normalized term frequency and smoothed `IDF = log((1 + N) / (1 + df)) + 1`; cosine similarity is the normalized vector dot product. Relationship extraction abstains when a supported predicate and subject/object pattern are not found. Extracted relations remain heuristic, so answers label them as such and include source chunk IDs rather than claiming a formal fact-verification guarantee. When neither source chunks nor graph relationships match, the engine says so instead of inventing an answer.
 
 ## Validation
 
