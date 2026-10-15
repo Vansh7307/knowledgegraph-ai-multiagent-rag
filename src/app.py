@@ -285,6 +285,104 @@ def api_query(
     return query(request, http_request, x_api_key)
 
 
+@app.get("/api/stats")
+def api_stats():
+    """Return rich analytics: node type distribution, top connected nodes, edge relation breakdown."""
+    graph = pipeline_state.get("graph")
+    if graph is None:
+        raise HTTPException(status_code=503, detail="Graph not ready.")
+
+    from collections import Counter
+    import networkx as nx
+
+    degree_map = dict(graph.degree())
+    top_nodes = sorted(degree_map.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    relation_counts: Counter = Counter()
+    for _, _, d in graph.edges(data=True):
+        relation_counts[d.get("relation", "related_to")] += 1
+
+    source_doc_counts: Counter = Counter()
+    for _, _, d in graph.edges(data=True):
+        src = d.get("source_doc", "unknown")
+        source_doc_counts[src] += 1
+
+    chunks = pipeline_state.get("chunks", [])
+    source_chunk_counts: Counter = Counter(c.source for c in chunks)
+
+    try:
+        density = nx.density(graph)
+        components = nx.number_weakly_connected_components(graph)
+    except Exception:
+        density = 0.0
+        components = 0
+
+    return {
+        "node_count": graph.number_of_nodes(),
+        "edge_count": graph.number_of_edges(),
+        "chunk_count": len(chunks),
+        "density": round(density, 4),
+        "components": components,
+        "llm_provider": pipeline_state.get("provider", "unknown"),
+        "top_nodes": [{"name": n, "degree": d} for n, d in top_nodes],
+        "relation_distribution": [{"relation": r, "count": c} for r, c in relation_counts.most_common(10)],
+        "source_distribution": [{"source": s, "chunks": c} for s, c in source_chunk_counts.most_common()],
+    }
+
+
+@app.get("/api/search-nodes")
+def api_search_nodes(q: str = ""):
+    """Fuzzy search over graph node names. Returns matching nodes with their degree."""
+    graph = pipeline_state.get("graph")
+    if graph is None:
+        raise HTTPException(status_code=503, detail="Graph not ready.")
+    if not q or len(q) < 2:
+        nodes = list(graph.nodes())[:50]
+        return {"results": [{"name": n, "degree": graph.degree(n)} for n in nodes]}
+    q_lower = q.lower()
+    matches = [
+        {"name": n, "degree": graph.degree(n)}
+        for n in graph.nodes()
+        if q_lower in n.lower()
+    ]
+    matches.sort(key=lambda x: x["degree"], reverse=True)
+    return {"results": matches[:20]}
+
+
+@app.get("/api/export")
+def api_export(fmt: str = "json"):
+    """Export the knowledge graph as JSON (nodes/edges) or CSV (edge list)."""
+    graph = pipeline_state.get("graph")
+    if graph is None:
+        raise HTTPException(status_code=503, detail="Graph not ready.")
+
+    if fmt == "csv":
+        import io
+        buf = io.StringIO()
+        buf.write("source,target,relation,chunk_id\n")
+        for u, v, d in graph.edges(data=True):
+            buf.write(f'"{u}","{v}","{d.get("relation","")}","{d.get("chunk_id","")}"\n')
+        from fastapi.responses import Response
+        return Response(
+            content=buf.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=knowledge_graph.csv"},
+        )
+
+    nodes = [{"id": n, "degree": graph.degree(n)} for n in graph.nodes()]
+    edges = [
+        {"source": u, "target": v, "relation": d.get("relation", ""), "chunk_id": d.get("chunk_id", "")}
+        for u, v, d in graph.edges(data=True)
+    ]
+    from fastapi.responses import Response
+    import json as _json
+    return Response(
+        content=_json.dumps({"nodes": nodes, "edges": edges}, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=knowledge_graph.json"},
+    )
+
+
 # Serve the Next.js static export — must be mounted LAST so API routes take priority
 import os as _os
 _static_dir = _os.path.join(_os.path.dirname(__file__), "..", "frontend", "out")
