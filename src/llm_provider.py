@@ -150,37 +150,73 @@ class OpenAICompatibleLLM:
         self._client = OpenAI(api_key=api_key or "not-needed", base_url=base_url)
 
     def chat(self, system: str, user: str, temperature: float = 0.2) -> str:
-        response = self._client.chat.completions.create(
-            model=self._model,
-            temperature=temperature,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        )
-        return response.choices[0].message.content or ""
+        try:
+            response = self._client.chat.completions.create(
+                model=self._model,
+                temperature=temperature,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            )
+            return response.choices[0].message.content or ""
+        except Exception as exc:
+            # Surface the error clearly rather than silently returning empty
+            raise RuntimeError(
+                f"[{self.info.name}] model '{self._model}' call failed: {exc}"
+            ) from exc
+
+
+def _probe_llm(llm) -> bool:
+    """Return True if the provider responds to a minimal test call."""
+    try:
+        llm.chat("ping", "ping")
+        return True
+    except Exception:
+        return False
 
 
 def get_llm():
-    """Return the best available LLM client, free options first."""
+    """Return the best available LLM client, free options first.
+
+    Each provider is probed with a tiny test call so a misconfigured model
+    name (e.g. a Groq model that was removed) falls through to the next
+    option instead of crashing the whole application at startup.
+    """
+    import logging
+    log = logging.getLogger(__name__)
+
     if settings.groq_api_key:
-        return OpenAICompatibleLLM(
+        candidate = OpenAICompatibleLLM(
             "groq", settings.groq_model, settings.groq_api_key,
             base_url="https://api.groq.com/openai/v1",
         )
+        if _probe_llm(candidate):
+            return candidate
+        log.warning("Groq probe failed (model '%s' unavailable?), trying next provider.", settings.groq_model)
+
     if settings.google_api_key:
-        return OpenAICompatibleLLM(
+        candidate = OpenAICompatibleLLM(
             "gemini", settings.gemini_model, settings.google_api_key,
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         )
+        if _probe_llm(candidate):
+            return candidate
+        log.warning("Gemini probe failed, trying next provider.")
+
     if _ollama_reachable():
         return OpenAICompatibleLLM(
             "ollama", settings.ollama_model, api_key="ollama",
             base_url=f"{settings.ollama_host}/v1",
         )
-    if settings.openai_api_key:
-        return OpenAICompatibleLLM("openai", settings.openai_model, settings.openai_api_key)
 
+    if settings.openai_api_key:
+        candidate = OpenAICompatibleLLM("openai", settings.openai_model, settings.openai_api_key)
+        if _probe_llm(candidate):
+            return candidate
+        log.warning("OpenAI probe failed, falling back to offline mode.")
+
+    log.warning("No LLM provider available — using offline scratch engine.")
     return OfflineLLM()
 
 

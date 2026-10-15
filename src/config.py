@@ -47,7 +47,7 @@ class Settings:
     openai_api_key: str | None = os.getenv("OPENAI_API_KEY")
     ollama_host: str | None = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
-    groq_model: str = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+    groq_model: str = os.getenv("GROQ_MODEL", "llama3-8b-8192")
     gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.1")
