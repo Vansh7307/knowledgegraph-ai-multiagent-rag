@@ -59,8 +59,21 @@ def extract_upload_text(filename: str, contents: bytes) -> str:
     return contents.decode("utf-8", errors="replace")
 
 
-def chunk_text(text: str, source: str, chunk_size: int = 500, chunk_overlap: int = 50) -> list[Chunk]:
+def chunk_text(
+    text: str,
+    source: str,
+    chunk_size: int = 500,
+    chunk_overlap: int = 50,
+    *,
+    size_words: int | None = None,
+    overlap_words: int | None = None,
+) -> list[Chunk]:
     """Semantic chunking via RecursiveCharacterTextSplitter (character-based)."""
+    if size_words is not None:
+        chunk_size = size_words * 5
+    if overlap_words is not None:
+        chunk_overlap = overlap_words * 5
+
     try:
         from langchain_text_splitters import RecursiveCharacterTextSplitter
         splitter = RecursiveCharacterTextSplitter(
