@@ -23,6 +23,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI, Header, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from src.config import settings
@@ -255,6 +256,41 @@ def query(
     )
 
 
-@app.get("/", response_class=HTMLResponse)
-def index():
-    return "<html><body><h2>KnowledgeGraph AI API is running. Use the React frontend or POST /query.</h2></body></html>"
+@app.get("/api/health")
+def api_health():
+    return health()
+
+
+@app.get("/api/graph-data")
+def api_graph_data():
+    return graph_data()
+
+
+@app.post("/api/ingest")
+async def api_ingest(file: UploadFile = File(...)):
+    return await ingest(file)
+
+
+@app.get("/api/graph-stream")
+async def api_graph_stream():
+    return await graph_stream()
+
+
+@app.post("/api/query", response_model=QueryResponse)
+def api_query(
+    request: QueryRequest,
+    http_request: Request,
+    x_api_key: str | None = Header(default=None),
+) -> QueryResponse:
+    return query(request, http_request, x_api_key)
+
+
+# Serve the Next.js static export — must be mounted LAST so API routes take priority
+import os as _os
+_static_dir = _os.path.join(_os.path.dirname(__file__), "..", "frontend", "out")
+if _os.path.isdir(_static_dir):
+    app.mount("/", StaticFiles(directory=_static_dir, html=True), name="frontend")
+else:
+    @app.get("/", response_class=HTMLResponse)
+    def index():
+        return "<html><body><h2>KnowledgeGraph AI API is running. Frontend not built yet.</h2></body></html>"
