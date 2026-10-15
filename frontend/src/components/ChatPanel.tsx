@@ -3,144 +3,236 @@ import { useRef, useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { toast } from "./Toast";
 
+interface TraceStep {
+  agent: string;
+  status: string;
+  detail: string;
+  ms: number;
+  strategy?: string;
+}
+
+interface SourceChunk { id: string; source: string; text: string; }
+
 interface Message {
   id: string;
   role: "user" | "assistant";
   text: string;
-  meta?: { hops: number; chunks: number; facts: number; strategy: string };
   error?: boolean;
   ts: number;
+  meta?: { hops: number; chunks: number; facts: number; strategy: string };
+  trace?: TraceStep[];
+  highlightedNodes?: string[];
+  highlightedEdges?: { source: string; target: string }[];
+  sourceChunks?: SourceChunk[];
+  graphFacts?: string[];
 }
 
-const SUGGESTIONS = [
+interface Props {
+  graphNodes?: string[];
+  onHighlight?: (nodes: string[], edges: { source: string; target: string }[]) => void;
+  onNodeFocus?: (name: string) => void;
+}
+
+const STATIC_SUGGESTIONS = [
   "What is Self-Attention?",
   "How does Graph RAG differ from plain RAG?",
   "What company built ChatGPT?",
   "How are multi-agent systems used in RAG?",
-  "What is Few-Shot Prompting?",
 ];
 
-const STRATEGY_COLORS: Record<string, string> = {
-  hybrid: "var(--teal)",
-  graph:  "var(--blue)",
-  text:   "var(--purple)",
-};
+const STRATEGY_COLORS: Record<string, string> = { hybrid: "var(--teal)", graph: "var(--blue)", text: "var(--purple)" };
+const AGENT_COLORS: Record<string, string> = { "Router": "var(--blue)", "Extractor / Retriever": "var(--teal)", "Reasoning": "var(--purple)", "Synthesizer": "var(--amber)" };
 
 function TypingDots() {
   return (
     <div style={{ display: "flex", gap: 4, alignItems: "center", padding: "4px 0" }}>
-      {[0, 1, 2].map(i => (
-        <span key={i} style={{
-          width: 6, height: 6, borderRadius: "50%", background: "var(--teal)",
-          animation: `pulse-dot 1.2s ease-in-out ${i * 0.2}s infinite`,
-          display: "inline-block",
-        }} />
-      ))}
+      {[0, 1, 2].map(i => <span key={i} style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--teal)", animation: `pulse-dot 1.2s ease-in-out ${i * 0.2}s infinite`, display: "inline-block" }} />)}
     </div>
   );
 }
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch { /* clipboard not available */ }
-  };
   return (
-    <button onClick={copy} style={{ background: "none", color: copied ? "var(--teal)" : "var(--muted)", fontSize: "0.7rem", padding: "2px 6px", borderRadius: "var(--radius-sm)", border: "1px solid transparent", transition: "all var(--transition)" }}
+    <button onClick={async () => { try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch {} }}
+      style={{ background: "none", color: copied ? "var(--teal)" : "var(--muted)", fontSize: "0.68rem", padding: "2px 6px", borderRadius: "var(--radius-sm)", border: "1px solid transparent" }}
       onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--border2)"; e.currentTarget.style.color = "var(--text2)"; }}
       onMouseLeave={e => { e.currentTarget.style.borderColor = "transparent"; e.currentTarget.style.color = copied ? "var(--teal)" : "var(--muted)"; }}>
-      {copied ? "✓ Copied" : "Copy"}
+      {copied ? "✓" : "Copy"}
     </button>
   );
 }
 
-export default function ChatPanel() {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [backendReady, setBackendReady] = useState<boolean | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+function AgentTrace({ trace }: { trace: TraceStep[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+      <button onClick={() => setOpen(o => !o)} style={{ background: "none", color: "var(--text2)", fontSize: "0.68rem", padding: 0, display: "flex", alignItems: "center", gap: 4 }}>
+        <span style={{ color: "var(--teal)" }}>{open ? "▾" : "▸"}</span>
+        Agent Execution Trace ({trace.length} steps)
+      </button>
+      {open && (
+        <div style={{ marginTop: 7, display: "flex", flexDirection: "column", gap: 5 }}>
+          {trace.map((step, i) => (
+            <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "6px 9px" }}>
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: AGENT_COLORS[step.agent] || "var(--muted)", marginTop: 4, flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 2 }}>
+                  <span style={{ fontSize: "0.7rem", fontWeight: 600, color: AGENT_COLORS[step.agent] || "var(--text2)" }}>{step.agent}</span>
+                  <span style={{ fontSize: "0.62rem", color: "var(--muted)", fontFamily: "JetBrains Mono, monospace" }}>{step.ms}ms</span>
+                </div>
+                <span style={{ fontSize: "0.68rem", color: "var(--text2)", lineHeight: 1.4 }}>{step.detail}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SourceChunksToggle({ chunks, facts }: { chunks: SourceChunk[]; facts: string[] }) {
+  const [open, setOpen] = useState(false);
+  if (chunks.length === 0 && facts.length === 0) return null;
+  return (
+    <div style={{ marginTop: 6, borderTop: "1px solid var(--border)", paddingTop: 6 }}>
+      <button onClick={() => setOpen(o => !o)} style={{ background: "none", color: "var(--text2)", fontSize: "0.68rem", padding: 0, display: "flex", alignItems: "center", gap: 4 }}>
+        <span style={{ color: "var(--purple)" }}>{open ? "▾" : "▸"}</span>
+        View Source Context ({chunks.length} chunks, {facts.length} graph facts)
+      </button>
+      {open && (
+        <div style={{ marginTop: 7, display: "flex", flexDirection: "column", gap: 6 }}>
+          {chunks.map(c => (
+            <div key={c.id} style={{ background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "7px 9px" }}>
+              <div style={{ fontSize: "0.62rem", color: "var(--muted)", marginBottom: 3, fontFamily: "JetBrains Mono, monospace" }}>{c.source}</div>
+              <div style={{ fontSize: "0.72rem", color: "var(--text2)", lineHeight: 1.5 }}>{c.text}</div>
+            </div>
+          ))}
+          {facts.length > 0 && (
+            <div style={{ background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "7px 9px" }}>
+              <div style={{ fontSize: "0.62rem", color: "var(--muted)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>Graph Facts</div>
+              {facts.map((f, i) => <div key={i} style={{ fontSize: "0.68rem", color: "var(--text2)", fontFamily: "JetBrains Mono, monospace", lineHeight: 1.6 }}>{f}</div>)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function ChatPanel({ graphNodes = [], onHighlight, onNodeFocus }: Props) {
+  const [messages,      setMessages]      = useState<Message[]>([]);
+  const [input,         setInput]         = useState("");
+  const [loading,       setLoading]       = useState(false);
+  const [backendReady,  setBackendReady]  = useState<boolean | null>(null);
+  const [suggestions,   setSuggestions]   = useState<string[]>(STATIC_SUGGESTIONS);
+  const bottomRef   = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  /* health check */
   useEffect(() => {
-    axios.get("/api/health").then(({ data }) => {
-      setBackendReady(data.status === "ok");
-    }).catch(() => setBackendReady(false));
+    axios.get("/api/health", { timeout: 8000 })
+      .then(({ data }) => setBackendReady(data.status === "ok"))
+      .catch(() => setBackendReady(false));
   }, []);
 
-  const scrollToBottom = useCallback(() => {
-    setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
-  }, []);
+  /* dynamic suggestions from graph nodes */
+  useEffect(() => {
+    if (graphNodes.length < 4) { setSuggestions(STATIC_SUGGESTIONS); return; }
+    const picks = [...graphNodes].sort(() => 0.5 - Math.random()).slice(0, 2);
+    setSuggestions([
+      ...STATIC_SUGGESTIONS.slice(0, 2),
+      `What is ${picks[0]} and how does it relate to the graph?`,
+      `Explain the relationship between ${picks[0]} and ${picks[1]}`,
+    ]);
+  }, [graphNodes]);
+
+  const scrollToBottom = useCallback(() => setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50), []);
 
   const send = useCallback(async (question: string) => {
     const q = question.trim();
     if (!q || loading) return;
-    if (q.length < 3) { toast("Question too short — minimum 3 characters", "warning"); return; }
-    if (q.length > 500) { toast("Question too long — maximum 500 characters", "warning"); return; }
+    if (q.length < 3)  { toast("Question too short", "warning"); return; }
+    if (q.length > 500){ toast("Question too long — max 500 chars", "warning"); return; }
 
     setInput("");
-    const userMsg: Message = { id: Math.random().toString(36).slice(2), role: "user", text: q, ts: Date.now() };
-    setMessages(prev => [...prev, userMsg]);
+    if (textareaRef.current) { textareaRef.current.style.height = "auto"; }
+    setMessages(prev => [...prev, { id: Math.random().toString(36).slice(2), role: "user", text: q, ts: Date.now() }]);
     setLoading(true);
     scrollToBottom();
 
     try {
-      const { data } = await axios.post("/api/query", { question: q });
-      const aiMsg: Message = {
+      const { data } = await axios.post("/api/query-rich", { question: q });
+      const msg: Message = {
         id: Math.random().toString(36).slice(2),
         role: "assistant",
         text: data.answer,
-        meta: { hops: data.hops, chunks: data.chunks_used, facts: data.graph_facts_used, strategy: data.strategy },
         ts: Date.now(),
+        meta: { hops: data.hops, chunks: data.chunks_used, facts: data.graph_facts_used, strategy: data.strategy },
+        trace: data.trace || [],
+        highlightedNodes: data.highlighted_nodes || [],
+        highlightedEdges: data.highlighted_edges || [],
+        sourceChunks: data.source_chunks || [],
+        graphFacts: data.graph_facts || [],
       };
-      setMessages(prev => [...prev, aiMsg]);
+      setMessages(prev => [...prev, msg]);
       setBackendReady(true);
+      if (data.highlighted_nodes?.length > 0) {
+        onHighlight?.(data.highlighted_nodes, data.highlighted_edges || []);
+        toast(`Graph: ${data.highlighted_nodes.length} nodes highlighted`, "info");
+      }
     } catch (e: any) {
-      const detail = e?.response?.data?.detail;
       const status = e?.response?.status;
+      const detail = e?.response?.data?.detail;
       let msg = "Pipeline error — try again";
-      if (status === 503) msg = "Knowledge graph is still building — wait a moment and retry";
-      else if (status === 429) msg = "Rate limit reached — wait a minute before sending more queries";
-      else if (status === 502) msg = "LLM provider error — the AI backend returned an error";
+      if (status === 503) msg = "Graph still building — wait a moment";
+      else if (status === 429) msg = "Rate limit — wait a minute";
+      else if (status === 502) msg = "LLM provider error";
       else if (detail) msg = detail;
-
-      const errMsg: Message = { id: Math.random().toString(36).slice(2), role: "assistant", text: msg, error: true, ts: Date.now() };
-      setMessages(prev => [...prev, errMsg]);
+      setMessages(prev => [...prev, { id: Math.random().toString(36).slice(2), role: "assistant", text: msg, error: true, ts: Date.now() }]);
       toast(msg, "error");
-    } finally {
-      setLoading(false);
-      scrollToBottom();
-    }
-  }, [loading, scrollToBottom]);
+    } finally { setLoading(false); scrollToBottom(); }
+  }, [loading, scrollToBottom, onHighlight]);
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(input); }
-  };
-
-  const clearHistory = () => {
-    setMessages([]);
-    toast("Conversation cleared", "info");
-  };
+  const clearHistory = () => { setMessages([]); onHighlight?.([], []); toast("Conversation cleared", "info"); };
 
   const autoResize = () => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 100) + "px";
+    const el = textareaRef.current; if (!el) return;
+    el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 100) + "px";
+  };
+
+  /* render entity badges — words matching graph nodes become clickable */
+  const renderAnswer = (text: string, nodes: string[]) => {
+    if (!nodes.length) return <span style={{ fontSize: "0.83rem", lineHeight: 1.65, whiteSpace: "pre-wrap" }}>{text}</span>;
+    const nodeSet = new Set(nodes.map(n => n.toLowerCase()));
+    const words = text.split(/(\s+)/);
+    return (
+      <span style={{ fontSize: "0.83rem", lineHeight: 1.65 }}>
+        {words.map((w, i) => {
+          const clean = w.replace(/[^a-zA-Z0-9\-]/g, "").toLowerCase();
+          const match = nodes.find(n => n.toLowerCase() === clean);
+          if (match) return (
+            <button key={i} onClick={() => onNodeFocus?.(match)} style={{ background: "var(--teal-dim)", color: "var(--teal)", border: "1px solid rgba(0,212,170,0.25)", borderRadius: 4, padding: "0 4px", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer", margin: "0 1px" }}
+              onMouseEnter={e => (e.currentTarget.style.background = "rgba(0,212,170,0.2)")}
+              onMouseLeave={e => (e.currentTarget.style.background = "var(--teal-dim)")}>
+              {w}
+            </button>
+          );
+          return <span key={i}>{w}</span>;
+        })}
+      </span>
+    );
   };
 
   return (
     <aside style={{ width: 340, minWidth: 280, background: "var(--panel)", borderLeft: "1px solid var(--border)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-      {/* Header */}
+
+      {/* ── header ── */}
       <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
             <span style={{ fontSize: "0.85rem", fontWeight: 600 }}>Ask the Graph</span>
-            <span className="badge badge-amber" style={{ fontSize: "0.65rem" }}>Synthesizer Agent</span>
+            <span className="badge badge-amber" style={{ fontSize: "0.62rem" }}>Synthesizer Agent</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             {backendReady !== null && (
@@ -150,7 +242,7 @@ export default function ChatPanel() {
               </span>
             )}
             {messages.length > 0 && (
-              <button onClick={clearHistory} style={{ background: "none", color: "var(--muted)", fontSize: "0.72rem", padding: "2px 6px", borderRadius: "var(--radius-sm)", border: "1px solid transparent" }}
+              <button onClick={clearHistory} style={{ background: "none", color: "var(--muted)", fontSize: "0.7rem", padding: "2px 6px", borderRadius: "var(--radius-sm)", border: "1px solid transparent" }}
                 onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--border2)"; e.currentTarget.style.color = "var(--red)"; }}
                 onMouseLeave={e => { e.currentTarget.style.borderColor = "transparent"; e.currentTarget.style.color = "var(--muted)"; }}>
                 Clear
@@ -160,25 +252,15 @@ export default function ChatPanel() {
         </div>
       </div>
 
-      {/* Messages */}
+      {/* ── messages ── */}
       <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
         {messages.length === 0 && (
-          <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <p style={{ fontSize: "0.72rem", color: "var(--muted)", marginBottom: 2 }}>Try asking:</p>
-            {SUGGESTIONS.map(s => (
-              <button key={s} onClick={() => send(s)} style={{
-                background: "var(--panel2)",
-                border: "1px solid var(--border)",
-                borderRadius: "var(--radius-sm)",
-                padding: "7px 10px",
-                fontSize: "0.75rem",
-                color: "var(--text2)",
-                textAlign: "left",
-                lineHeight: 1.4,
-                transition: "all var(--transition)",
-              }}
-              onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--teal)"; e.currentTarget.style.color = "var(--teal)"; e.currentTarget.style.background = "var(--teal-glow)"; }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--text2)"; e.currentTarget.style.background = "var(--panel2)"; }}>
+          <div className="fade-in" style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+            <p style={{ fontSize: "0.7rem", color: "var(--muted)", marginBottom: 2 }}>Try asking:</p>
+            {suggestions.map(s => (
+              <button key={s} onClick={() => send(s)} style={{ background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "7px 10px", fontSize: "0.75rem", color: "var(--text2)", textAlign: "left", lineHeight: 1.4 }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--teal)"; e.currentTarget.style.color = "var(--teal)"; e.currentTarget.style.background = "var(--teal-glow)"; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--text2)"; e.currentTarget.style.background = "var(--panel2)"; }}>
                 {s}
               </button>
             ))}
@@ -186,105 +268,60 @@ export default function ChatPanel() {
         )}
 
         {messages.map(m => (
-          <div key={m.id} className="fade-in" style={{
-            background: m.role === "user" ? "var(--panel2)" : m.error ? "var(--red-dim)" : "rgba(0,212,170,0.04)",
-            border: `1px solid ${m.role === "user" ? "var(--border)" : m.error ? "rgba(239,68,68,0.25)" : "rgba(0,212,170,0.12)"}`,
-            borderRadius: "var(--radius)",
-            padding: "10px 12px",
-          }}>
+          <div key={m.id} className="fade-in" style={{ background: m.role === "user" ? "var(--panel2)" : m.error ? "var(--red-dim)" : "rgba(0,212,170,0.04)", border: `1px solid ${m.role === "user" ? "var(--border)" : m.error ? "rgba(239,68,68,0.25)" : "rgba(0,212,170,0.12)"}`, borderRadius: "var(--radius)", padding: "10px 12px" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 5 }}>
-              <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "0.65rem", color: m.role === "user" ? "var(--text2)" : m.error ? "var(--red)" : "var(--teal)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "0.62rem", color: m.role === "user" ? "var(--text2)" : m.error ? "var(--red)" : "var(--teal)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
                 {m.role === "user" ? "You" : m.error ? "Error" : "AI"}
               </span>
               {m.role === "assistant" && !m.error && <CopyButton text={m.text} />}
             </div>
-            <div style={{ fontSize: "0.83rem", lineHeight: 1.65, whiteSpace: "pre-wrap", color: m.error ? "var(--red)" : "var(--text)" }}>
-              {m.text}
+
+            <div style={{ color: m.error ? "var(--red)" : "var(--text)" }}>
+              {m.role === "assistant" && !m.error && m.highlightedNodes?.length
+                ? renderAnswer(m.text, m.highlightedNodes)
+                : <span style={{ fontSize: "0.83rem", lineHeight: 1.65, whiteSpace: "pre-wrap" }}>{m.text}</span>}
             </div>
+
             {m.meta && (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}>
-                <span className="badge" style={{ background: "transparent", border: "1px solid var(--border)", color: STRATEGY_COLORS[m.meta.strategy] || "var(--text2)", fontSize: "0.65rem" }}>
-                  {m.meta.strategy}
-                </span>
-                <span className="badge" style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--text2)", fontSize: "0.65rem" }}>
-                  {m.meta.hops} hop{m.meta.hops !== 1 ? "s" : ""}
-                </span>
-                <span className="badge" style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--text2)", fontSize: "0.65rem" }}>
-                  {m.meta.chunks} chunks
-                </span>
-                <span className="badge" style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--text2)", fontSize: "0.65rem" }}>
-                  {m.meta.facts} graph facts
-                </span>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}>
+                <span className="badge" style={{ background: "transparent", border: "1px solid var(--border)", color: STRATEGY_COLORS[m.meta.strategy] || "var(--text2)", fontSize: "0.62rem" }}>{m.meta.strategy}</span>
+                <span className="badge" style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--text2)", fontSize: "0.62rem" }}>{m.meta.hops} hop{m.meta.hops !== 1 ? "s" : ""}</span>
+                <span className="badge" style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--text2)", fontSize: "0.62rem" }}>{m.meta.chunks} chunks</span>
+                <span className="badge" style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--text2)", fontSize: "0.62rem" }}>{m.meta.facts} facts</span>
               </div>
             )}
+
+            {m.trace && m.trace.length > 0 && <AgentTrace trace={m.trace} />}
+            {m.sourceChunks && <SourceChunksToggle chunks={m.sourceChunks} facts={m.graphFacts || []} />}
           </div>
         ))}
 
         {loading && (
           <div className="fade-in" style={{ background: "rgba(0,212,170,0.04)", border: "1px solid rgba(0,212,170,0.12)", borderRadius: "var(--radius)", padding: "10px 12px" }}>
-            <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "0.65rem", color: "var(--teal)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>AI</div>
+            <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: "0.62rem", color: "var(--teal)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>AI · Running pipeline…</div>
             <TypingDots />
           </div>
         )}
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
+      {/* ── input ── */}
       <div style={{ padding: "10px 14px", borderTop: "1px solid var(--border)", flexShrink: 0, background: "var(--panel)" }}>
-        <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={e => { setInput(e.target.value); autoResize(); }}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask a question… (Ctrl+Enter to send)"
-            rows={1}
-            disabled={loading}
-            maxLength={500}
-            style={{
-              flex: 1,
-              background: "var(--panel2)",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius-sm)",
-              color: "var(--text)",
-              padding: "8px 10px",
-              fontSize: "0.83rem",
-              resize: "none",
-              lineHeight: 1.5,
-              minHeight: 36,
-              maxHeight: 100,
-              overflow: "auto",
-            }}
+        <div style={{ display: "flex", gap: 7, alignItems: "flex-end" }}>
+          <textarea ref={textareaRef} value={input} onChange={e => { setInput(e.target.value); autoResize(); }}
+            onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send(input); } }}
+            placeholder="Ask a question… (Ctrl+Enter)" rows={1} disabled={loading} maxLength={500}
+            style={{ flex: 1, background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", color: "var(--text)", padding: "8px 10px", fontSize: "0.83rem", resize: "none", lineHeight: 1.5, minHeight: 36, maxHeight: 100, overflow: "auto" }}
             onFocus={e => (e.target.style.borderColor = "var(--teal)")}
-            onBlur={e => (e.target.style.borderColor = "var(--border)")}
-          />
-          <button
-            onClick={() => send(input)}
-            disabled={loading || !input.trim()}
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: "var(--radius-sm)",
-              background: input.trim() && !loading ? "var(--teal)" : "var(--panel2)",
-              color: input.trim() && !loading ? "#06110f" : "var(--muted)",
-              border: "1px solid var(--border)",
-              fontWeight: 700,
-              fontSize: "1rem",
-              flexShrink: 0,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              transition: "all var(--transition)",
-            }}
-          >
-            {loading ? (
-              <span className="spin" style={{ width: 14, height: 14, border: "2px solid var(--border2)", borderTopColor: "var(--teal)", borderRadius: "50%", display: "inline-block" }} />
-            ) : "→"}
+            onBlur={e => (e.target.style.borderColor = "var(--border)")} />
+          <button onClick={() => send(input)} disabled={loading || !input.trim()}
+            style={{ width: 36, height: 36, borderRadius: "var(--radius-sm)", background: input.trim() && !loading ? "var(--teal)" : "var(--panel2)", color: input.trim() && !loading ? "#06110f" : "var(--muted)", border: "1px solid var(--border)", fontWeight: 700, fontSize: "1rem", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            {loading ? <span className="spin" style={{ width: 14, height: 14, border: "2px solid var(--border2)", borderTopColor: "var(--teal)", borderRadius: "50%", display: "inline-block" }} /> : "→"}
           </button>
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 5 }}>
-          <span style={{ fontSize: "0.65rem", color: "var(--muted)" }}>Ctrl+Enter to send</span>
-          <span style={{ fontSize: "0.65rem", color: input.length > 450 ? "var(--amber)" : "var(--muted)" }}>{input.length}/500</span>
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+          <span style={{ fontSize: "0.62rem", color: "var(--muted)" }}>Ctrl+Enter to send</span>
+          <span style={{ fontSize: "0.62rem", color: input.length > 450 ? "var(--amber)" : "var(--muted)" }}>{input.length}/500</span>
         </div>
       </div>
     </aside>

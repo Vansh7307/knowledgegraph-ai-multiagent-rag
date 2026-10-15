@@ -285,6 +285,204 @@ def api_query(
     return query(request, http_request, x_api_key)
 
 
+@app.post("/api/query-rich")
+def api_query_rich(
+    request: QueryRequest,
+    http_request: Request,
+    x_api_key: str | None = Header(default=None),
+):
+    """Extended query endpoint that returns agent trace, highlighted nodes, and source chunks."""
+    _check_api_key(x_api_key)
+    _check_rate_limit(http_request.client.host if http_request.client else "unknown")
+
+    if "query_graph" not in pipeline_state:
+        raise HTTPException(status_code=503, detail="Knowledge graph is still building. Try again shortly.")
+
+    from src.agents import RouterAgent
+    import time as _time
+
+    trace = []
+
+    # --- Router Agent ---
+    t0 = _time.monotonic()
+    router = RouterAgent()
+    route = router.route(request.question)
+    strategy = route.get("strategy", "hybrid")
+    router_ms = round((_time.monotonic() - t0) * 1000)
+    trace.append({
+        "agent": "Router",
+        "status": "done",
+        "detail": f"Strategy: {strategy} — {route.get('reason', '')}",
+        "ms": router_ms,
+        "strategy": strategy,
+    })
+
+    # --- Retrieval + Reasoning + Synthesis (via LangGraph) ---
+    t1 = _time.monotonic()
+    qg = pipeline_state["query_graph"]
+    try:
+        result = qg.invoke({"question": request.question, "hop": 0})
+    except Exception as e:
+        logger.exception("Pipeline failed")
+        raise HTTPException(status_code=502, detail="LLM provider error. Try again.") from e
+    pipeline_ms = round((_time.monotonic() - t1) * 1000)
+
+    chunks_used = result.get("chunks", [])
+    graph_facts = result.get("graph_facts", [])
+    entities_used = result.get("entities", [])
+
+    trace.append({
+        "agent": "Extractor / Retriever",
+        "status": "done",
+        "detail": f"{len(chunks_used)} chunks retrieved, {len(entities_used)} entities matched",
+        "ms": pipeline_ms,
+    })
+    trace.append({
+        "agent": "Reasoning",
+        "status": "done",
+        "detail": f"{result.get('hop', 0)} reasoning hop(s), {len(graph_facts)} graph facts used",
+        "ms": pipeline_ms,
+    })
+    trace.append({
+        "agent": "Synthesizer",
+        "status": "done",
+        "detail": f"Answer generated ({len(result.get('answer', ''))} chars)",
+        "ms": pipeline_ms,
+    })
+
+    # Build highlighted subgraph: nodes and edges involved in the answer
+    graph = pipeline_state.get("graph")
+    highlighted_nodes: list[str] = list(entities_used)
+    highlighted_edges: list[dict] = []
+    if graph and entities_used:
+        entity_set = set(entities_used)
+        for u, v, d in graph.edges(data=True):
+            if u in entity_set or v in entity_set:
+                highlighted_edges.append({"source": u, "target": v, "relation": d.get("relation", "")})
+                entity_set.add(u)
+                entity_set.add(v)
+        highlighted_nodes = list(entity_set)
+
+    source_chunks = [
+        {"id": c.chunk_id, "source": c.source, "text": c.text[:300]}
+        for c in chunks_used
+    ]
+
+    return {
+        "answer": result["answer"],
+        "hops": result.get("hop", 0),
+        "chunks_used": len(chunks_used),
+        "graph_facts_used": len(graph_facts),
+        "strategy": strategy,
+        "trace": trace,
+        "highlighted_nodes": highlighted_nodes,
+        "highlighted_edges": highlighted_edges,
+        "source_chunks": source_chunks,
+        "graph_facts": graph_facts[:10],
+    }
+
+
+@app.post("/api/ingest-demo")
+async def api_ingest_demo():
+    """Re-ingest all sample docs and return live progress as SSE stream."""
+    import asyncio
+
+    graph = pipeline_state.get("graph")
+    if graph is None:
+        raise HTTPException(status_code=503, detail="Pipeline not ready.")
+
+    async def _stream():
+        from src.text_utils import load_documents, chunk_text as _chunk_text
+        from src.knowledge_graph import KnowledgeGraphBuilder
+        from src.retriever import HybridRetriever
+        from src.graph_orchestrator import build_query_graph
+        import json as _json
+
+        docs = load_documents(settings.data_dir)
+        total_chunks = 0
+        total_entities = 0
+        total_relations = 0
+
+        yield f"data: {_json.dumps({'event': 'start', 'doc_count': len(docs)})}\n\n"
+        await asyncio.sleep(0.05)
+
+        kg_builder = KnowledgeGraphBuilder()
+        kg_builder.graph = graph
+        all_new_chunks = []
+
+        for i, (source, text) in enumerate(docs.items()):
+            chunks = _chunk_text(text, source, settings.chunk_size_words * 5, settings.chunk_overlap_words * 5)
+            yield f"data: {_json.dumps({'event': 'doc_start', 'source': source, 'chunks': len(chunks), 'doc_index': i})}\n\n"
+            await asyncio.sleep(0.05)
+
+            for j, chunk in enumerate(chunks):
+                before_nodes = graph.number_of_nodes()
+                before_edges = graph.number_of_edges()
+                kg_builder.add_chunk(chunk)
+                new_nodes = graph.number_of_nodes() - before_nodes
+                new_edges = graph.number_of_edges() - before_edges
+                total_entities += new_nodes
+                total_relations += new_edges
+                total_chunks += 1
+                yield f"data: {_json.dumps({'event': 'chunk', 'chunk_index': j, 'total_chunks': total_chunks, 'new_nodes': new_nodes, 'new_edges': new_edges, 'total_nodes': graph.number_of_nodes(), 'total_edges': graph.number_of_edges()})}\n\n"
+                await asyncio.sleep(0.02)
+
+            all_new_chunks.extend(chunks)
+            yield f"data: {_json.dumps({'event': 'doc_done', 'source': source})}\n\n"
+            await asyncio.sleep(0.05)
+
+        all_chunks = pipeline_state["chunks"] + all_new_chunks
+        new_retriever = HybridRetriever(all_chunks)
+        new_query_graph = build_query_graph(new_retriever, graph, list(graph.nodes))
+        pipeline_state.update({
+            "chunks": all_chunks,
+            "retriever": new_retriever,
+            "query_graph": new_query_graph,
+            "node_count": graph.number_of_nodes(),
+            "edge_count": graph.number_of_edges(),
+        })
+
+        from src.knowledge_graph import _graph_to_vis as _gtv
+        graph_vis = _graph_to_vis(graph)
+        yield f"data: {_json.dumps({'event': 'done', 'total_chunks': total_chunks, 'total_nodes': graph.number_of_nodes(), 'total_edges': graph.number_of_edges(), 'graph': graph_vis})}\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
+
+
+@app.get("/api/node-detail")
+def api_node_detail(name: str):
+    """Return full detail for a graph node: connections, source chunks, triplets."""
+    graph = pipeline_state.get("graph")
+    if graph is None:
+        raise HTTPException(status_code=503, detail="Graph not ready.")
+    if name not in graph:
+        raise HTTPException(status_code=404, detail=f"Node '{name}' not found.")
+
+    out_edges = [
+        {"subject": name, "predicate": d.get("relation", "related_to"), "object": v, "chunk_id": d.get("chunk_id", "")}
+        for _, v, d in graph.out_edges(name, data=True)
+    ]
+    in_edges = [
+        {"subject": u, "predicate": d.get("relation", "related_to"), "object": name, "chunk_id": d.get("chunk_id", "")}
+        for u, _, d in graph.in_edges(name, data=True)
+    ]
+    chunks = pipeline_state.get("chunks", [])
+    mentions = graph.nodes[name].get("mentions", [])
+    source_chunks = [
+        {"id": c.chunk_id, "source": c.source, "text": c.text[:400]}
+        for c in chunks if c.chunk_id in mentions
+    ][:3]
+
+    return {
+        "name": name,
+        "degree": graph.degree(name),
+        "in_degree": graph.in_degree(name),
+        "out_degree": graph.out_degree(name),
+        "triplets": out_edges + in_edges,
+        "source_chunks": source_chunks,
+    }
+
+
 @app.get("/api/stats")
 def api_stats():
     """Return rich analytics: node type distribution, top connected nodes, edge relation breakdown."""
