@@ -483,6 +483,63 @@ def api_node_detail(name: str):
     }
 
 
+@app.get("/api/graph")
+def api_graph():
+    """Return full graph with entity types, stats, and all nodes/edges."""
+    graph = pipeline_state.get("graph")
+    if graph is None:
+        raise HTTPException(status_code=503, detail="Graph not ready.")
+    from collections import Counter
+    import networkx as nx
+    nodes = [{"id": n, "label": n, "degree": graph.degree(n)} for n in graph.nodes()]
+    links = [{"source": u, "target": v, "relation": d.get("relation", "related_to"), "chunk_id": d.get("chunk_id", "")} for u, v, d in graph.edges(data=True)]
+    relation_counts: Counter = Counter(d.get("relation", "related_to") for _, _, d in graph.edges(data=True))
+    try:
+        density = round(nx.density(graph), 4)
+        components = nx.number_weakly_connected_components(graph)
+    except Exception:
+        density = 0.0
+        components = 0
+    return {"nodes": nodes, "links": links, "node_count": graph.number_of_nodes(), "edge_count": graph.number_of_edges(), "chunk_count": len(pipeline_state.get("chunks", [])), "density": density, "components": components, "llm_provider": pipeline_state.get("provider", "unknown"), "relation_distribution": [{"relation": r, "count": c} for r, c in relation_counts.most_common(10)]}
+
+
+@app.post("/api/upload")
+async def api_upload(file: UploadFile = File(...)):
+    """Upload .txt or .pdf, run Extractor Agent, update graph immediately."""
+    if not file.filename.endswith((".txt", ".pdf")):
+        raise HTTPException(status_code=400, detail="Only .txt and .pdf files are supported.")
+    graph = pipeline_state.get("graph")
+    if graph is None:
+        raise HTTPException(status_code=503, detail="Pipeline not ready.")
+    contents = await file.read()
+    contents = _limit_pdf_pages(contents, file.filename)
+    text = extract_upload_text(file.filename, contents)
+    chunks = chunk_text(text, file.filename, settings.chunk_size_words * 5, settings.chunk_overlap_words * 5)
+    kg_builder = KnowledgeGraphBuilder()
+    kg_builder.graph = graph
+    for chunk in chunks:
+        kg_builder.add_chunk(chunk)
+    all_chunks = pipeline_state["chunks"] + chunks
+    new_retriever = HybridRetriever(all_chunks)
+    new_query_graph = build_query_graph(new_retriever, graph, list(graph.nodes))
+    pipeline_state.update({"chunks": all_chunks, "retriever": new_retriever, "query_graph": new_query_graph, "node_count": graph.number_of_nodes(), "edge_count": graph.number_of_edges()})
+    return {"message": f"Ingested '{file.filename}': {len(chunks)} chunks, graph now has {graph.number_of_nodes()} nodes / {graph.number_of_edges()} edges.", "graph": _graph_to_vis(graph), "chunks_added": len(chunks)}
+
+
+@app.post("/api/reset")
+def api_reset():
+    """Clear the in-memory graph and reset all counters to zero."""
+    import networkx as nx
+    graph = pipeline_state.get("graph")
+    if graph is not None:
+        graph.clear()
+    chunks = pipeline_state.get("chunks", [])
+    new_retriever = HybridRetriever([])
+    new_query_graph = build_query_graph(new_retriever, graph or nx.MultiDiGraph(), [])
+    pipeline_state.update({"chunks": [], "retriever": new_retriever, "query_graph": new_query_graph, "node_count": 0, "edge_count": 0})
+    return {"status": "reset", "node_count": 0, "edge_count": 0}
+
+
 @app.get("/api/stats")
 def api_stats():
     """Return rich analytics: node type distribution, top connected nodes, edge relation breakdown."""
