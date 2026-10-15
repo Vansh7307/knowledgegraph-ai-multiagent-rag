@@ -36,6 +36,11 @@ class Settings:
     # -- Multi-agent control loop ----------------------------------------
     max_reasoning_hops: int = int(os.getenv("KG_MAX_REASONING_HOPS", "2"))
 
+    # -- Neo4j AuraDB (optional; skipped if NEO4J_URI is unset) -----------
+    neo4j_uri: str | None = os.getenv("NEO4J_URI")
+    neo4j_username: str = os.getenv("NEO4J_USERNAME", "neo4j")
+    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "")
+
     # -- LLM provider keys (all optional; first one found wins) ---------
     groq_api_key: str | None = os.getenv("GROQ_API_KEY")
     google_api_key: str | None = os.getenv("GOOGLE_API_KEY")

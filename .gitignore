@@ -18,3 +18,7 @@ venv/
 # OS cruft
 .DS_Store
 Thumbs.db
+
+# Node.js / Next.js
+node_modules/
+.next/

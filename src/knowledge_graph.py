@@ -1,17 +1,11 @@
 """
 knowledge_graph.py
 -------------------
-The Graph Builder Agent: turns raw text chunks into a NetworkX knowledge
-graph of entities connected by relations, with full provenance (every
-edge remembers which chunk it came from, so answers can always be
-traced back to source text).
+Graph Builder Agent: extracts entities/relations from text chunks into:
+  1. An in-memory NetworkX graph (fast, used for retrieval)
+  2. Neo4j AuraDB (cloud persistence, optional -- skipped if NEO4J_URI unset)
 
-Graph building calls the LLM once per chunk, which costs time and (on
-free-tier providers) quota. Since the graph only needs to change when the
-source documents change, `build_with_cache` persists the built graph to
-disk keyed on a hash of the corpus -- so a process restart (e.g. Render's
-free-tier spin-down/wake cycle) reloads the cached graph instantly instead
-of re-extracting every chunk from scratch.
+Neo4j connection uses the official driver with connection pooling.
 """
 
 from __future__ import annotations
@@ -21,6 +15,7 @@ import json
 import logging
 import os
 import re
+from typing import Optional
 
 import networkx as nx
 
@@ -28,6 +23,45 @@ from src.llm_provider import get_llm
 from src.text_utils import Chunk
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Neo4j connection pool (module-level singleton, None if not configured)
+# ---------------------------------------------------------------------------
+_neo4j_driver = None
+
+
+def _get_neo4j_driver():
+    """Return a cached Neo4j driver, or None if NEO4J_URI is not set."""
+    global _neo4j_driver
+    if _neo4j_driver is not None:
+        return _neo4j_driver
+    uri = os.getenv("NEO4J_URI")
+    user = os.getenv("NEO4J_USERNAME", "neo4j")
+    password = os.getenv("NEO4J_PASSWORD", "")
+    if not uri:
+        return None
+    try:
+        from neo4j import GraphDatabase
+        _neo4j_driver = GraphDatabase.driver(uri, auth=(user, password), max_connection_pool_size=10)
+        _neo4j_driver.verify_connectivity()
+        logger.info("Neo4j AuraDB connected: %s", uri)
+    except Exception as e:
+        logger.warning("Neo4j connection failed (%s) -- continuing with in-memory graph only", e)
+        _neo4j_driver = None
+    return _neo4j_driver
+
+
+def _neo4j_merge_relation(driver, src: str, tgt: str, relation: str, chunk_id: str) -> None:
+    """Upsert a single relationship into Neo4j using Cypher MERGE."""
+    cypher = (
+        "MERGE (a:Entity {name: $src}) "
+        "MERGE (b:Entity {name: $tgt}) "
+        "MERGE (a)-[r:RELATION {type: $rel}]->(b) "
+        "ON CREATE SET r.chunk_id = $chunk_id"
+    )
+    with driver.session() as session:
+        session.run(cypher, src=src, tgt=tgt, rel=relation, chunk_id=chunk_id)
+
 
 EXTRACTION_SYSTEM_PROMPT = """You are an information-extraction agent in a Knowledge Graph pipeline.
 Read the passage and extract the key named entities (people, organizations,
@@ -62,6 +96,7 @@ class KnowledgeGraphBuilder:
         for entity in parsed.get("entities", []):
             self.graph.add_node(entity, mentions=self.graph.nodes.get(entity, {}).get("mentions", []) + [chunk.chunk_id])
 
+        driver = _get_neo4j_driver()
         for rel in parsed.get("relations", []):
             src, tgt, label = rel.get("source"), rel.get("target"), rel.get("relation", "related_to")
             if not src or not tgt or src == tgt:
@@ -69,6 +104,11 @@ class KnowledgeGraphBuilder:
             self.graph.add_node(src)
             self.graph.add_node(tgt)
             self.graph.add_edge(src, tgt, relation=label, chunk_id=chunk.chunk_id, source_doc=chunk.source)
+            if driver:
+                try:
+                    _neo4j_merge_relation(driver, src, tgt, label, chunk.chunk_id)
+                except Exception as e:
+                    logger.warning("Neo4j write failed for (%s->%s): %s", src, tgt, e)
 
     def build(self, chunks: list[Chunk]) -> nx.MultiDiGraph:
         for chunk in chunks:
